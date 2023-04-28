@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/lithammer/fuzzysearch/fuzzy"
@@ -31,6 +34,62 @@ type StrfryResult struct {
 	ID     string `json:"id"`     // event id
 	Action string `json:"action"` // accept or reject
 	Msg    string `json:"msg"`    // sent to client for reject
+}
+
+type Relay struct {
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	OwnerID   string      `json:"ownerId"`
+	Status    interface{} `json:"status"`
+	IP        interface{} `json:"ip"`
+	Capacity  interface{} `json:"capacity"`
+	Port      interface{} `json:"port"`
+	WhiteList struct {
+		ID           string `json:"id"`
+		RelayID      string `json:"relayId"`
+		ListKeywords []struct {
+			ID          string      `json:"id"`
+			WhiteListID string      `json:"whiteListId"`
+			BlackListID interface{} `json:"blackListId"`
+			Keyword     string      `json:"keyword"`
+			Reason      string      `json:"reason"`
+			ExpiresAt   interface{} `json:"expires_at"`
+		} `json:"list_keywords"`
+		ListPubkeys []struct {
+			ID          string      `json:"id"`
+			WhiteListID string      `json:"whiteListId"`
+			BlackListID interface{} `json:"blackListId"`
+			Pubkey      string      `json:"pubkey"`
+			Reason      interface{} `json:"reason"`
+			ExpiresAt   interface{} `json:"expires_at"`
+		} `json:"list_pubkeys"`
+	} `json:"white_list"`
+	BlackList struct {
+		ID           string `json:"id"`
+		RelayID      string `json:"relayId"`
+		ListKeywords []struct {
+			ID          string      `json:"id"`
+			WhiteListID interface{} `json:"whiteListId"`
+			BlackListID string      `json:"blackListId"`
+			Keyword     string      `json:"keyword"`
+			Reason      string      `json:"reason"`
+			ExpiresAt   interface{} `json:"expires_at"`
+		} `json:"list_keywords"`
+		ListPubkeys []struct {
+			ID          string      `json:"id"`
+			WhiteListID interface{} `json:"whiteListId"`
+			BlackListID string      `json:"blackListId"`
+			Pubkey      string      `json:"pubkey"`
+			Reason      string      `json:"reason"`
+			ExpiresAt   interface{} `json:"expires_at"`
+		} `json:"list_pubkeys"`
+	} `json:"black_list"`
+	Owner struct {
+		ID     string      `json:"id"`
+		Pubkey string      `json:"pubkey"`
+		Name   interface{} `json:"name"`
+	} `json:"owner"`
+	Moderators []interface{} `json:"moderators"`
 }
 
 func expireSeen(seen map[string]time.Time) map[string]time.Time {
@@ -68,14 +127,6 @@ func log(message string) {
 	errlog.Flush()
 }
 
-var niceBots = []string{
-	"8ebf24a6d1a0bb69f7bce5863fec286ff3a0ebafdff0e89e2ed219d83f219238", // cowdle
-}
-
-var niceContent = []string{
-	"@cowdle #game",
-}
-
 func compareSimilar(s1 string, s2 string) (float64, bool) {
 	l1 := float64(len(s1))
 	l2 := float64(len(s2))
@@ -107,6 +158,38 @@ func compareSimilar(s1 string, s2 string) (float64, bool) {
 	}
 }
 
+func queryRelay() Relay {
+	url := "http://172.17.0.1:3000/api/sconfig/relays/clfpg8rgc0001gh2ot0qdkavd"
+	rClient := http.Client{
+		Timeout: time.Second * 5,
+	}
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log(err.Error())
+	}
+	res, getErr := rClient.Do(req)
+	if getErr != nil {
+		log(getErr.Error())
+	}
+	if res.Body != nil {
+		defer res.Body.Close()
+	}
+
+	body, readErr := ioutil.ReadAll(res.Body)
+	if readErr != nil {
+		log(readErr.Error())
+	}
+	relay := Relay{}
+	jsonErr := json.Unmarshal(body, &relay)
+	if jsonErr != nil {
+		log("json not unmarshaled")
+	}
+
+	//log(fmt.Sprintf("%v", relay))
+	return relay
+}
+
 func main() {
 	initLogging()
 	defer logfile.Close()
@@ -118,11 +201,20 @@ func main() {
 
 	var seen = make(map[string]time.Time)
 
-	for {
+	var relay = queryRelay()
 
+	ticker := time.NewTicker(5 * time.Second)
+	go func() {
+		for {
+			<-ticker.C
+			relay = queryRelay()
+		}
+	}()
+
+	for {
 		seen = expireSeen(seen)
 		var input, _ = reader.ReadString('\n')
-		log(fmt.Sprintf("invoked> spamblaster 0.0.1 -> seen cache size: %d", len(seen)))
+		log(fmt.Sprintf("invoked spamblaster -> seen cache size: %d", len(seen)))
 
 		var e StrfryEvent
 		if err := json.Unmarshal([]byte(input), &e); err != nil {
@@ -134,48 +226,60 @@ func main() {
 			Action: "accept",
 		}
 
-		// whitelist addresses and content
-		isNiceBot := false
-		for _, b := range niceBots {
-			if b == e.Event.Pubkey {
-				isNiceBot = true
+		badMessage := false
+		isWl := false
+		badResp := ""
+
+		for _, k := range relay.WhiteList.ListKeywords {
+			if strings.Contains(e.Event.Content, k.Keyword) {
+				badMessage = false
+				isWl = true
 			}
 		}
-		for _, b := range niceContent {
-			if b == e.Event.Content {
-				isNiceBot = true
+
+		for _, k := range relay.WhiteList.ListPubkeys {
+			if strings.Contains(e.Event.Pubkey, k.Pubkey) {
+				badMessage = false
+				isWl = true
+			}
+		}
+
+		for _, k := range relay.BlackList.ListKeywords {
+			if strings.Contains(e.Event.Content, k.Keyword) {
+				badMessage = true
+				badResp = "blocked. reason: keyword blacklisted"
+			}
+		}
+
+		for _, k := range relay.BlackList.ListPubkeys {
+			if strings.Contains(e.Event.Pubkey, k.Pubkey) {
+				badMessage = true
+				badResp = "blocked. reason: pubkey blacklisted"
+			}
+		}
+
+		seenDist := 1.00
+		if badMessage == false {
+			for i := range seen {
+				dist, tooSimilar := compareSimilar(i, e.Event.Content)
+				if tooSimilar && !isWl {
+					badMessage = true
+					badResp = "blocked. reason: duplicate message"
+					seenDist = dist
+				}
 			}
 		}
 
 		// message
 		if e.Event.Kind == 1 {
-			badMessage := false
-			seenDist := 1.00
-			for i, _ := range seen {
-				dist, tooSimilar := compareSimilar(i, e.Event.Content)
-				if tooSimilar {
-					badMessage = true
-					seenDist = dist
-				}
-			}
-			/*
-				if badMessage {
-					// url shorteners for meme lords
-					if len(e.Event.Content) == 32 && dist  {
-						if strings.HasPrefix(e.Event.Content, "https://nostr.build/") || strings.HasPrefix(e.Event.Content, "https://imgflip.com/") || strings.HasPrefix(e.Event.Content, "https://imgur.com/") {
-							badMessage = false
-						}
-					}
-				}
-			*/
 			if badMessage {
 				result.Action = "reject"
-				result.Msg = "blocked by spamblaster. reason: duplicate message"
+				result.Msg = badResp
 				logFile(fmt.Sprintf("blocked,%.2f,%s,%s,%s,%s\n", seenDist, e.SourceInfo, e.Event.Pubkey, e.Event.Content, time.Now()))
 			} else {
 				logFile(fmt.Sprintf("message,%s,%s,%s\n", e.SourceInfo, e.Event.Pubkey, e.Event.Content))
 
-				if len(e.Event.Content) > 20 && !isNiceBot {
+				if len(e.Event.Content) > 20 && !isWl {
 					seen[e.Event.Content] = time.Now()
 				}
 			}
@@ -183,32 +287,13 @@ func main() {
 
 		// channel message
 		if e.Event.Kind == 42 {
-			badMessage := false
-			seenDist := 1.00
-			for i, _ := range seen {
-				dist, tooSimilar := compareSimilar(i, e.Event.Content)
-				if tooSimilar {
-					badMessage = true
-					seenDist = dist
-				}
-			}
-			/*
-				if badMessage {
-					// url shorteners for meme lords
-					if len(e.Event.Content) == 32 {
-						if strings.HasPrefix(e.Event.Content, "https://nostr.build/") || strings.HasPrefix(e.Event.Content, "https://imgflip.com/") || strings.HasPrefix(e.Event.Content, "https://imgur.com/") {
-							badMessage = false
-						}
-					}
-				}
-			*/
 			if badMessage {
 				result.Action = "reject"
-				result.Msg = "blocked by spamblaster. reason: duplicate message"
+				result.Msg = badResp
 				logFile(fmt.Sprintf("blocked,%.2f,%s,%s,%s,%s\n", seenDist, e.SourceInfo, e.Event.Pubkey, e.Event.Content, time.Now()))
 			} else {
 				logFile(fmt.Sprintf("cmessage,%s,%s,%s\n", e.SourceInfo, e.Event.Pubkey, e.Event.Content))
-				if len(e.Event.Content) > 20 && !isNiceBot {
+				if len(e.Event.Content) > 20 && !isWl {
 					seen[e.Event.Content] = time.Now()
 				}
 			}
