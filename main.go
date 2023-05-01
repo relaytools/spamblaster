@@ -117,9 +117,10 @@ func initLogging() {
 }
 
 func logFile(message string) {
-	if _, err := logfile.WriteString(message); err != nil {
-		log("error writing to file: " + err.Error())
-	}
+	//if _, err := logfile.WriteString(message); err != nil {
+	//	log("error writing to file: " + err.Error())
+	//}
+	log(message)
 }
 
 func log(message string) {
@@ -226,44 +227,60 @@ func main() {
 			Action: "accept",
 		}
 
-		badMessage := false
+		allowMessage := false
 		isWl := false
+
+		// pubkeys logic
+		if relay.WhiteList.ListPubkeys != nil && len(relay.WhiteList.ListPubkeys) >= 1 {
+			// relay is in whitelist pubkey mode, only allow these pubkeys to post
+			for _, k := range relay.WhiteList.ListPubkeys {
+				if strings.Contains(e.Event.Pubkey, k.Pubkey) {
+					log("allowing whitelist for pubkey: " + k.Pubkey)
+					allowMessage = true
+					isWl = true
+				}
+			}
+		} else if relay.BlackList.ListPubkeys != nil && len(relay.BlackList.ListPubkeys) >= 1 {
+			// relay is in blacklist pubkey mode, mark bad
+			for _, k := range relay.BlackList.ListPubkeys {
+				log("rejecting for pubkey: " + k.Pubkey)
+				if strings.Contains(e.Event.Pubkey, k.Pubkey) {
+					allowMessage = false
+				}
+			}
+		}
+
+		// keywords logic
+		if relay.WhiteList.ListKeywords != nil && len(relay.WhiteList.ListKeywords) >= 1 {
+			// relay has whitelist keywords, allow  messages matching any of these keywords to post, deny messages that don't.
+			for _, k := range relay.WhiteList.ListKeywords {
+				log("allowing for keyword: " + k.Keyword)
+				if strings.Contains(e.Event.Content, k.Keyword) {
+					allowMessage = true
+				}
+			}
+		}
+
+		if relay.BlackList.ListKeywords != nil && len(relay.BlackList.ListKeywords) >= 1 {
+			// relay has blacklist keywords, deny messages matching any of these keywords to post
+			for _, k := range relay.BlackList.ListKeywords {
+				if strings.Contains(e.Event.Content, k.Keyword) {
+					log("rejecting for keyword: " + k.Keyword)
+					allowMessage = false
+				}
+			}
+		}
+
 		badResp := ""
 
-		for _, k := range relay.WhiteList.ListKeywords {
-			if strings.Contains(e.Event.Content, k.Keyword) {
-				badMessage = false
-				isWl = true
-			}
-		}
-
-		for _, k := range relay.WhiteList.ListPubkeys {
-			if strings.Contains(e.Event.Pubkey, k.Pubkey) {
-				badMessage = false
-				isWl = true
-			}
-		}
-
-		for _, k := range relay.BlackList.ListKeywords {
-			if strings.Contains(e.Event.Content, k.Keyword) {
-				badMessage = true
-				badResp = "blocked. reason: keyword blacklisted"
-			}
-		}
-
-		for _, k := range relay.BlackList.ListPubkeys {
-			if strings.Contains(e.Event.Pubkey, k.Pubkey) {
-				badMessage = true
-				badResp = "blocked. reason: pubkey blacklisted"
-			}
-		}
-
-		seenDist := 1.00
-		if badMessage == false {
+		seenDist := 0.00
+		if allowMessage {
+			// spam duplicate inhibitor
 			for i := range seen {
 				dist, tooSimilar := compareSimilar(i, e.Event.Content)
+				// block unless pubkey is specifically whitelisted
 				if tooSimilar && !isWl {
-					badMessage = true
+					allowMessage = false
 					badResp = "blocked. reason: duplicate message"
 					seenDist = dist
 				}
@@ -272,7 +289,7 @@ func main() {
 
 		// message
 		if e.Event.Kind == 1 {
-			if badMessage {
+			if !allowMessage {
 				result.Action = "reject"
 				result.Msg = badResp
 				logFile(fmt.Sprintf("blocked,%.2f,%s,%s,%s,%s\n", seenDist, e.SourceInfo, e.Event.Pubkey, e.Event.Content, time.Now()))
@@ -287,7 +304,7 @@ func main() {
 
 		// channel message
 		if e.Event.Kind == 42 {
-			if badMessage {
+			if !allowMessage {
 				result.Action = "reject"
 				result.Msg = badResp
 				logFile(fmt.Sprintf("blocked,%.2f,%s,%s,%s,%s\n", seenDist, e.SourceInfo, e.Event.Pubkey, e.Event.Content, time.Now()))
