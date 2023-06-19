@@ -243,8 +243,8 @@ func main() {
 		} else if relay.BlackList.ListPubkeys != nil && len(relay.BlackList.ListPubkeys) >= 1 {
 			// relay is in blacklist pubkey mode, mark bad
 			for _, k := range relay.BlackList.ListPubkeys {
-				log("rejecting for pubkey: " + k.Pubkey)
 				if strings.Contains(e.Event.Pubkey, k.Pubkey) {
+					log("rejecting for pubkey: " + k.Pubkey)
 					allowMessage = false
 				}
 			}
@@ -254,8 +254,8 @@ func main() {
 		if relay.WhiteList.ListKeywords != nil && len(relay.WhiteList.ListKeywords) >= 1 {
 			// relay has whitelist keywords, allow  messages matching any of these keywords to post, deny messages that don't.
 			for _, k := range relay.WhiteList.ListKeywords {
-				log("allowing for keyword: " + k.Keyword)
 				if strings.Contains(e.Event.Content, k.Keyword) {
+					log("allowing for keyword: " + k.Keyword)
 					allowMessage = true
 				}
 			}
