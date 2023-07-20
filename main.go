@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lithammer/fuzzysearch/fuzzy"
+	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
 // {"event":{"content":"testy testy","created_at":1676015822,"id":"7dcad0a3e8f204a5dd38cec78e37302444f1af5b14e927c5c94d2b00b557f353","kind":1,"pubkey":"eee7c60d4beba24e99eb0e04e77807c09971553ff4199458268e849fe46424eb","sig":"58590143607be25b93493013f8b6513c342e7d184f95f9d76a90d297157ca36cedf92e30da2abfc88af2766f3ab726be2323a53bc678137189e4cc97583c8bd7","tags":[]},"receivedAt":1676015822,"sourceInfo":"127.0.0.1","sourceType":"IP4","type":"new"}
@@ -37,20 +38,83 @@ type StrfryResult struct {
 }
 
 type Relay struct {
-	ID        string      `json:"id"`
-	Name      string      `json:"name"`
-	OwnerID   string      `json:"ownerId"`
-	Status    interface{} `json:"status"`
-	IP        interface{} `json:"ip"`
-	Capacity  interface{} `json:"capacity"`
-	Port      interface{} `json:"port"`
-	WhiteList struct {
+	ID                   string      `json:"id"`
+	Name                 string      `json:"name"`
+	OwnerID              string      `json:"ownerId"`
+	Status               interface{} `json:"status"`
+	DefaultMessagePolicy bool        `json:"default_message_policy"`
+	IP                   interface{} `json:"ip"`
+	Capacity             interface{} `json:"capacity"`
+	Port                 interface{} `json:"port"`
+	AllowList            struct {
 		ID           string `json:"id"`
 		RelayID      string `json:"relayId"`
 		ListKeywords []struct {
 			ID          string      `json:"id"`
-			WhiteListID string      `json:"whiteListId"`
-			BlackListID interface{} `json:"blackListId"`
+			AllowListID string      `json:"AllowListId"`
+			BlockListID interface{} `json:"BlockListId"`
+			Keyword     string      `json:"keyword"`
+			Reason      string      `json:"reason"`
+			ExpiresAt   interface{} `json:"expires_at"`
+		} `json:"list_keywords"`
+		ListPubkeys []struct {
+			ID          string      `json:"id"`
+			AllowListID string      `json:"AllowListId"`
+			BlockListID interface{} `json:"BlockListId"`
+			Pubkey      string      `json:"pubkey"`
+			Reason      string      `json:"reason"`
+			ExpiresAt   interface{} `json:"expires_at"`
+		} `json:"list_pubkeys"`
+	} `json:"allow_list"`
+	BlockList struct {
+		ID           string `json:"id"`
+		RelayID      string `json:"relayId"`
+		ListKeywords []struct {
+			ID          string      `json:"id"`
+			AllowListID interface{} `json:"AllowListId"`
+			BlockListID string      `json:"BlockListId"`
+			Keyword     string      `json:"keyword"`
+			Reason      string      `json:"reason"`
+			ExpiresAt   interface{} `json:"expires_at"`
+		} `json:"list_keywords"`
+		ListPubkeys []struct {
+			ID          string      `json:"id"`
+			AllowListID interface{} `json:"AllowListId"`
+			BlockListID string      `json:"BlockListId"`
+			Pubkey      string      `json:"pubkey"`
+			Reason      string      `json:"reason"`
+			ExpiresAt   interface{} `json:"expires_at"`
+		} `json:"list_pubkeys"`
+	} `json:"block_list"`
+	Owner struct {
+		ID     string      `json:"id"`
+		Pubkey string      `json:"pubkey"`
+		Name   interface{} `json:"name"`
+	} `json:"owner"`
+	Moderators []struct {
+		ID      string `json:"id"`
+		RelayID string `json:"relayId"`
+		UserID  string `json:"userId"`
+	} `json:"moderators"`
+}
+
+/*
+type Relay struct {
+	ID                   string      `json:"id"`
+	Name                 string      `json:"name"`
+	OwnerID              string      `json:"ownerId"`
+	Status               interface{} `json:"status"`
+	IP                   interface{} `json:"ip"`
+	Capacity             interface{} `json:"capacity"`
+	Port                 interface{} `json:"port"`
+	DefaultMessagePolicy bool        `json:"default_message_policy"`
+	AllowList            struct {
+		ID           string `json:"id"`
+		RelayID      string `json:"relayId"`
+		ListKeywords []struct {
+			ID          string      `json:"id"`
+			AllowListID string      `json:"whiteListId"`
+			BlockListID interface{} `json:"blackListId"`
 			Keyword     string      `json:"keyword"`
 			Reason      string      `json:"reason"`
 			ExpiresAt   interface{} `json:"expires_at"`
@@ -64,7 +128,7 @@ type Relay struct {
 			ExpiresAt   interface{} `json:"expires_at"`
 		} `json:"list_pubkeys"`
 	} `json:"white_list"`
-	BlackList struct {
+	BlockList struct {
 		ID           string `json:"id"`
 		RelayID      string `json:"relayId"`
 		ListKeywords []struct {
@@ -91,6 +155,7 @@ type Relay struct {
 	} `json:"owner"`
 	Moderators []interface{} `json:"moderators"`
 }
+*/
 
 func expireSeen(seen map[string]time.Time) map[string]time.Time {
 	var newSeen = make(map[string]time.Time)
@@ -159,19 +224,34 @@ func compareSimilar(s1 string, s2 string) (float64, bool) {
 	}
 }
 
-func queryRelay() Relay {
-	url := "http://172.17.0.1:3000/api/sconfig/relays/clfpg8rgc0001gh2ot0qdkavd"
+func queryRelay(oldrelay Relay) (Relay, error) {
+
+	relay := Relay{}
+
+	//url := "http://172.17.0.1:3000/api/sconfig/relays/clfpg8rgc0001gh2ot0qdkavd"
+	url := "http://172.17.0.1:3000/api/sconfig/relays/clj9061480003ghacbub9mley"
+
+	body, err := ioutil.ReadFile("./spamblaster.cfg")
+	if err != nil {
+		log(fmt.Sprintf("unable to read config file: %v", err))
+	} else {
+		url = strings.TrimSuffix(string(body), "\n")
+	}
+
 	rClient := http.Client{
 		Timeout: time.Second * 5,
 	}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
+
 	if err != nil {
 		log(err.Error())
+		return oldrelay, err
 	}
 	res, getErr := rClient.Do(req)
 	if getErr != nil {
 		log(getErr.Error())
+		return oldrelay, err
 	}
 	if res.Body != nil {
 		defer res.Body.Close()
@@ -181,14 +261,13 @@ func queryRelay() Relay {
 	if readErr != nil {
 		log(readErr.Error())
 	}
-	relay := Relay{}
 	jsonErr := json.Unmarshal(body, &relay)
 	if jsonErr != nil {
 		log("json not unmarshaled")
 	}
 
 	//log(fmt.Sprintf("%v", relay))
-	return relay
+	return relay, nil
 }
 
 func main() {
@@ -202,13 +281,21 @@ func main() {
 
 	var seen = make(map[string]time.Time)
 
-	var relay = queryRelay()
+	var err1 error
+	var relay Relay
+	relay, err1 = queryRelay(relay)
+	if err1 != nil {
+		log("there was an error fetching relay, using cache or nil")
+	}
 
 	ticker := time.NewTicker(5 * time.Second)
 	go func() {
 		for {
 			<-ticker.C
-			relay = queryRelay()
+			relay, err1 = queryRelay(relay)
+			if err1 != nil {
+				log("there was an error fetching relay, using cache or nil")
+			}
 		}
 	}()
 
@@ -228,32 +315,69 @@ func main() {
 		}
 
 		allowMessage := false
+		if relay.DefaultMessagePolicy {
+			log("policy default: allowing all")
+			allowMessage = true
+		} else {
+			log("policy default: denying all")
+		}
 		isWl := false
+		badResp := ""
 
 		// pubkeys logic
-		if relay.WhiteList.ListPubkeys != nil && len(relay.WhiteList.ListPubkeys) >= 1 {
+		// false is deny, true is allow
+		if !relay.DefaultMessagePolicy {
 			// relay is in whitelist pubkey mode, only allow these pubkeys to post
-			for _, k := range relay.WhiteList.ListPubkeys {
+			for _, k := range relay.AllowList.ListPubkeys {
+				if strings.Contains(k.Pubkey, "npub") {
+					if _, v, err := nip19.Decode(k.Pubkey); err == nil {
+						pub := v.(string)
+						if strings.Contains(e.Event.Pubkey, pub) {
+							log("allowing whitelist for pubkey: " + k.Pubkey)
+							allowMessage = true
+							isWl = true
+						}
+					} else {
+						log("error decoding pubkey: " + k.Pubkey + " " + err.Error())
+					}
+				}
+
 				if strings.Contains(e.Event.Pubkey, k.Pubkey) {
 					log("allowing whitelist for pubkey: " + k.Pubkey)
 					allowMessage = true
 					isWl = true
 				}
 			}
-		} else if relay.BlackList.ListPubkeys != nil && len(relay.BlackList.ListPubkeys) >= 1 {
+		}
+
+		if relay.BlockList.ListPubkeys != nil && len(relay.BlockList.ListPubkeys) >= 1 {
 			// relay is in blacklist pubkey mode, mark bad
-			for _, k := range relay.BlackList.ListPubkeys {
+			for _, k := range relay.BlockList.ListPubkeys {
+				if strings.Contains(k.Pubkey, "npub") {
+					if _, v, err := nip19.Decode(k.Pubkey); err == nil {
+						pub := v.(string)
+						if strings.Contains(e.Event.Pubkey, pub) {
+							log("rejecting for pubkey: " + k.Pubkey)
+							badResp = "blocked pubkey " + k.Pubkey + " reason: " + k.Reason
+							allowMessage = false
+							isWl = false
+						}
+					} else {
+						log("error decoding pubkey: " + k.Pubkey + " " + err.Error())
+					}
+				}
 				if strings.Contains(e.Event.Pubkey, k.Pubkey) {
 					log("rejecting for pubkey: " + k.Pubkey)
+					badResp = "blocked pubkey " + k.Pubkey + " reason: " + k.Reason
 					allowMessage = false
 				}
 			}
 		}
 
 		// keywords logic
-		if relay.WhiteList.ListKeywords != nil && len(relay.WhiteList.ListKeywords) >= 1 {
+		if relay.AllowList.ListKeywords != nil && len(relay.AllowList.ListKeywords) >= 1 && !relay.DefaultMessagePolicy {
 			// relay has whitelist keywords, allow  messages matching any of these keywords to post, deny messages that don't.
-			for _, k := range relay.WhiteList.ListKeywords {
+			for _, k := range relay.AllowList.ListKeywords {
 				if strings.Contains(e.Event.Content, k.Keyword) {
 					log("allowing for keyword: " + k.Keyword)
 					allowMessage = true
@@ -261,17 +385,16 @@ func main() {
 			}
 		}
 
-		if relay.BlackList.ListKeywords != nil && len(relay.BlackList.ListKeywords) >= 1 {
+		if relay.BlockList.ListKeywords != nil && len(relay.BlockList.ListKeywords) >= 1 {
 			// relay has blacklist keywords, deny messages matching any of these keywords to post
-			for _, k := range relay.BlackList.ListKeywords {
+			for _, k := range relay.BlockList.ListKeywords {
 				if strings.Contains(e.Event.Content, k.Keyword) {
 					log("rejecting for keyword: " + k.Keyword)
+					badResp = "blocked. " + k.Keyword + " reason: " + k.Reason
 					allowMessage = false
 				}
 			}
 		}
-
-		badResp := ""
 
 		seenDist := 0.00
 		if allowMessage {
