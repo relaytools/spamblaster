@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -14,16 +15,16 @@ import (
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
-// {"event":{"content":"testy testy","created_at":1676015822,"id":"7dcad0a3e8f204a5dd38cec78e37302444f1af5b14e927c5c94d2b00b557f353","kind":1,"pubkey":"eee7c60d4beba24e99eb0e04e77807c09971553ff4199458268e849fe46424eb","sig":"58590143607be25b93493013f8b6513c342e7d184f95f9d76a90d297157ca36cedf92e30da2abfc88af2766f3ab726be2323a53bc678137189e4cc97583c8bd7","tags":[]},"receivedAt":1676015822,"sourceInfo":"127.0.0.1","sourceType":"IP4","type":"new"}
+// Strfry Events (FROM STDIN)
 type StrfryEvent struct {
 	Event struct {
-		Content   string        `json:"content"`
-		CreatedAt int           `json:"created_at"`
-		ID        string        `json:"id"`
-		Kind      int           `json:"kind"`
-		Pubkey    string        `json:"pubkey"`
-		Sig       string        `json:"sig"`
-		Tags      []interface{} `json:"tags"`
+		Content   string     `json:"content"`
+		CreatedAt int        `json:"created_at"`
+		ID        string     `json:"id"`
+		Kind      int        `json:"kind"`
+		Pubkey    string     `json:"pubkey"`
+		Sig       string     `json:"sig"`
+		Tags      [][]string `json:"tags"`
 	} `json:"event"`
 	ReceivedAt int    `json:"receivedAt"`
 	SourceInfo string `json:"sourceInfo"`
@@ -31,12 +32,14 @@ type StrfryEvent struct {
 	Type       string `json:"type"`
 }
 
+// Strfry Actions
 type StrfryResult struct {
 	ID     string `json:"id"`     // event id
 	Action string `json:"action"` // accept or reject
 	Msg    string `json:"msg"`    // sent to client for reject
 }
 
+// Relay Creator Schema
 type Relay struct {
 	ID                   string      `json:"id"`
 	Name                 string      `json:"name"`
@@ -93,70 +96,13 @@ type Relay struct {
 	} `json:"owner"`
 	Moderators []struct {
 		ID      string `json:"id"`
+		Pubkey  string `json:"pubkey"`
 		RelayID string `json:"relayId"`
 		UserID  string `json:"userId"`
 	} `json:"moderators"`
 }
 
-/*
-type Relay struct {
-	ID                   string      `json:"id"`
-	Name                 string      `json:"name"`
-	OwnerID              string      `json:"ownerId"`
-	Status               interface{} `json:"status"`
-	IP                   interface{} `json:"ip"`
-	Capacity             interface{} `json:"capacity"`
-	Port                 interface{} `json:"port"`
-	DefaultMessagePolicy bool        `json:"default_message_policy"`
-	AllowList            struct {
-		ID           string `json:"id"`
-		RelayID      string `json:"relayId"`
-		ListKeywords []struct {
-			ID          string      `json:"id"`
-			AllowListID string      `json:"whiteListId"`
-			BlockListID interface{} `json:"blackListId"`
-			Keyword     string      `json:"keyword"`
-			Reason      string      `json:"reason"`
-			ExpiresAt   interface{} `json:"expires_at"`
-		} `json:"list_keywords"`
-		ListPubkeys []struct {
-			ID          string      `json:"id"`
-			WhiteListID string      `json:"whiteListId"`
-			BlackListID interface{} `json:"blackListId"`
-			Pubkey      string      `json:"pubkey"`
-			Reason      interface{} `json:"reason"`
-			ExpiresAt   interface{} `json:"expires_at"`
-		} `json:"list_pubkeys"`
-	} `json:"white_list"`
-	BlockList struct {
-		ID           string `json:"id"`
-		RelayID      string `json:"relayId"`
-		ListKeywords []struct {
-			ID          string      `json:"id"`
-			WhiteListID interface{} `json:"whiteListId"`
-			BlackListID string      `json:"blackListId"`
-			Keyword     string      `json:"keyword"`
-			Reason      string      `json:"reason"`
-			ExpiresAt   interface{} `json:"expires_at"`
-		} `json:"list_keywords"`
-		ListPubkeys []struct {
-			ID          string      `json:"id"`
-			WhiteListID interface{} `json:"whiteListId"`
-			BlackListID string      `json:"blackListId"`
-			Pubkey      string      `json:"pubkey"`
-			Reason      string      `json:"reason"`
-			ExpiresAt   interface{} `json:"expires_at"`
-		} `json:"list_pubkeys"`
-	} `json:"black_list"`
-	Owner struct {
-		ID     string      `json:"id"`
-		Pubkey string      `json:"pubkey"`
-		Name   interface{} `json:"name"`
-	} `json:"owner"`
-	Moderators []interface{} `json:"moderators"`
-}
-*/
-
+// Spam detection expiry
 func expireSeen(seen map[string]time.Time) map[string]time.Time {
 	var newSeen = make(map[string]time.Time)
 	for k, v := range seen {
@@ -173,18 +119,7 @@ var errlog = bufio.NewWriter(os.Stderr)
 
 var logfile *os.File
 
-func initLogging() {
-	var err error
-	logfile, err = os.OpenFile("spamblaster.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log(err.Error())
-	}
-}
-
 func logFile(message string) {
-	//if _, err := logfile.WriteString(message); err != nil {
-	//	log("error writing to file: " + err.Error())
-	//}
 	log(message)
 }
 
@@ -228,7 +163,7 @@ func queryRelay(oldrelay Relay) (Relay, error) {
 
 	relay := Relay{}
 
-	//url := "http://172.17.0.1:3000/api/sconfig/relays/clfpg8rgc0001gh2ot0qdkavd"
+	// example spamblaster config
 	url := "http://172.17.0.1:3000/api/sconfig/relays/clj9061480003ghacbub9mley"
 
 	body, err := ioutil.ReadFile("./spamblaster.cfg")
@@ -266,12 +201,10 @@ func queryRelay(oldrelay Relay) (Relay, error) {
 		log("json not unmarshaled")
 	}
 
-	//log(fmt.Sprintf("%v", relay))
 	return relay, nil
 }
 
 func main() {
-	initLogging()
 	defer logfile.Close()
 
 	var reader = bufio.NewReader(os.Stdin)
@@ -323,6 +256,77 @@ func main() {
 		}
 		isWl := false
 		badResp := ""
+
+		// moderation retroactive delete
+		if e.Event.Kind == 1984 {
+			isModAction := false
+			for _, m := range relay.Moderators {
+				if m.Pubkey == e.Event.Pubkey {
+					isModAction = true
+				}
+			}
+			if relay.Owner.Pubkey == e.Event.Pubkey {
+				isModAction = true
+			}
+			if isModAction {
+				log(fmt.Sprintf("1984 request from %s>", e.Event.Pubkey))
+				// perform deletion of a single event
+				// grab the event id
+
+				thisReason := ""
+				thisEvent := ""
+				for _, x := range e.Event.Tags {
+					if x[0] == "e" {
+						thisEvent = x[1]
+						if len(x) == 3 {
+							thisReason = x[2]
+						}
+					}
+				}
+
+				if thisEvent != "" {
+					log(fmt.Sprintf("received 1984 from mod: %s, delete event <%s>, reason: %s", e.Event.Pubkey, thisEvent, thisReason))
+					// shell out
+					filter := fmt.Sprintf("{\"ids\": [\"%s\"]}", thisEvent)
+					cmd := exec.Command("/app/strfry", "delete", "--filter", filter)
+					out, err := cmd.Output()
+					if err != nil {
+						log(fmt.Sprintln("could not run command: ", err))
+					}
+					log(fmt.Sprintln("strfry command output: ", string(out)))
+
+					//cmd.Run()
+				}
+
+				// if modaction is for a pubkey, post back to the API for block_list pubkey
+				// also delete the events related to this pubkey
+				thisPubkey := ""
+				for _, x := range e.Event.Tags {
+					if x[0] == "p" {
+						thisPubkey = x[1]
+						if len(x) == 3 {
+							thisReason = x[2]
+						}
+					}
+				}
+
+				// event should be blank if we're getting a report about just a pubkey
+				if thisPubkey != "" && thisEvent == "" {
+					log(fmt.Sprintf("received 1984 from mod: %s, block and delete pubkey <%s>, reason: %s", e.Event.Pubkey, thisPubkey, thisReason))
+					// shell out
+					filter := fmt.Sprintf("{\"authors\": [\"%s\"]}", thisPubkey)
+					cmd := exec.Command("/app/strfry", "delete", "--filter", filter)
+					out, err := cmd.Output()
+					if err != nil {
+						log(fmt.Sprintln("could not run command: ", err))
+					}
+					log(fmt.Sprintln("strfry command output: ", string(out)))
+					//cmd.Run()
+					// TODO: call to api
+				}
+
+			}
+		}
 
 		// pubkeys logic
 		// false is deny, true is allow
