@@ -4,15 +4,17 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/lithammer/fuzzysearch/fuzzy"
+	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
+	"github.com/influxdata/influxdb-client-go/v2/api"
 	"github.com/nbd-wtf/go-nostr/nip19"
+	"github.com/spf13/viper"
 )
 
 // Strfry Events (FROM STDIN)
@@ -102,19 +104,6 @@ type Relay struct {
 	} `json:"moderators"`
 }
 
-// Spam detection expiry
-func expireSeen(seen map[string]time.Time) map[string]time.Time {
-	var newSeen = make(map[string]time.Time)
-	for k, v := range seen {
-		expires := v.Add(3 * time.Hour)
-		//log(fmt.Sprintf("\nseen: %s\n%s\n%s\n%s\n\n", k, v, tenMin, time.Now()))
-		if time.Now().Before(expires) {
-			newSeen[k] = v
-		}
-	}
-	return newSeen
-}
-
 var errlog = bufio.NewWriter(os.Stderr)
 
 var logfile *os.File
@@ -128,35 +117,14 @@ func log(message string) {
 	errlog.Flush()
 }
 
-func compareSimilar(s1 string, s2 string) (float64, bool) {
-	l1 := float64(len(s1))
-	l2 := float64(len(s2))
-	if l1 == 0 || l2 == 0 {
-		return 1.00, false
-	}
-	var pDist float64
-	if l1 >= l2 {
-		// sizes are different enough
-		diffSize := l2 / l1
-		if diffSize < 0.7 {
-			return 1.00, false
+func decodePub(pubkey string) string {
+	usepub := pubkey
+	if strings.Contains(pubkey, "npub") {
+		if _, v, err := nip19.Decode(pubkey); err == nil {
+			usepub = v.(string)
 		}
-		dist := fuzzy.LevenshteinDistance(s1, s2)
-		pDist = float64(dist) / l2
-	} else {
-		// sizes are different enough
-		diffSize := l1 / l2
-		if diffSize < 0.7 {
-			return 1.00, false
-		}
-		dist := fuzzy.LevenshteinDistance(s1, s2)
-		pDist = float64(dist) / l1
 	}
-	if pDist < 0.04 {
-		return pDist, true
-	} else {
-		return pDist, false
-	}
+	return usepub
 }
 
 func queryRelay(oldrelay Relay) (Relay, error) {
@@ -164,9 +132,9 @@ func queryRelay(oldrelay Relay) (Relay, error) {
 	relay := Relay{}
 
 	// example spamblaster config
-	url := "http://172.17.0.1:3000/api/sconfig/relays/clj9061480003ghacbub9mley"
+	url := "http://127.0.0.1:3000/api/sconfig/relays/clkklcjon000wgh31mcgbut40"
 
-	body, err := ioutil.ReadFile("./spamblaster.cfg")
+	body, err := os.ReadFile("./spamblaster.cfg")
 	if err != nil {
 		log(fmt.Sprintf("unable to read config file: %v", err))
 	} else {
@@ -174,7 +142,7 @@ func queryRelay(oldrelay Relay) (Relay, error) {
 	}
 
 	rClient := http.Client{
-		Timeout: time.Second * 5,
+		Timeout: time.Second * 10,
 	}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -192,16 +160,26 @@ func queryRelay(oldrelay Relay) (Relay, error) {
 		defer res.Body.Close()
 	}
 
-	body, readErr := ioutil.ReadAll(res.Body)
+	body, readErr := io.ReadAll(res.Body)
 	if readErr != nil {
 		log(readErr.Error())
+		return oldrelay, readErr
 	}
 	jsonErr := json.Unmarshal(body, &relay)
 	if jsonErr != nil {
 		log("json not unmarshaled")
+		return oldrelay, jsonErr
 	}
 
 	return relay, nil
+}
+
+type influxdbConfig struct {
+	Url         string `mapstructure:"INFLUXDB_URL"`
+	Token       string `mapstructure:"INFLUXDB_TOKEN"`
+	Org         string `mapstructure:"INFLUXDB_ORG"`
+	Bucket      string `mapstructure:"INFLUXDB_BUCKET"`
+	Measurement string `mapstructure:"INFLUXDB_MEASUREMENT"`
 }
 
 func main() {
@@ -212,8 +190,6 @@ func main() {
 	defer output.Flush()
 	defer errlog.Flush()
 
-	var seen = make(map[string]time.Time)
-
 	var err1 error
 	var relay Relay
 	relay, err1 = queryRelay(relay)
@@ -221,7 +197,7 @@ func main() {
 		log("there was an error fetching relay, using cache or nil")
 	}
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	go func() {
 		for {
 			<-ticker.C
@@ -232,10 +208,37 @@ func main() {
 		}
 	}()
 
+	// InfluxDB optional config loading
+	viper.AddConfigPath("/usr/local/etc")
+	viper.SetConfigName(".spamblaster.env")
+	viper.SetConfigType("env")
+	influxEnabled := true
+	var iConfig *influxdbConfig
+	if err := viper.ReadInConfig(); err != nil {
+		log(fmt.Sprint("Warn: error reading influxdb config file /usr/local/etc/.spamblaster.env\n", err))
+		influxEnabled = false
+	}
+	// Viper unmarshals the loaded env variables into the struct
+	if err := viper.Unmarshal(&iConfig); err != nil {
+		log(fmt.Sprint("Warn: unable to decode influxdb config into struct\n", err))
+		influxEnabled = false
+	}
+
+	log(fmt.Sprintf("Info: influxdb: %t\n", influxEnabled))
+
+	var client influxdb2.Client
+	var writeAPI api.WriteAPI
+
+	if influxEnabled {
+		// INFLUX INIT
+		client = influxdb2.NewClientWithOptions(iConfig.Url, iConfig.Token,
+			influxdb2.DefaultOptions().SetBatchSize(20))
+		// Get non-blocking write client
+		writeAPI = client.WriteAPI(iConfig.Org, iConfig.Bucket)
+	}
+
 	for {
-		seen = expireSeen(seen)
 		var input, _ = reader.ReadString('\n')
-		log(fmt.Sprintf("invoked spamblaster -> seen cache size: %d", len(seen)))
 
 		var e StrfryEvent
 		if err := json.Unmarshal([]byte(input), &e); err != nil {
@@ -254,14 +257,14 @@ func main() {
 		} else {
 			log("policy default: denying all")
 		}
-		isWl := false
 		badResp := ""
 
 		// moderation retroactive delete
 		if e.Event.Kind == 1984 {
 			isModAction := false
 			for _, m := range relay.Moderators {
-				if m.Pubkey == e.Event.Pubkey {
+				usepub := decodePub(m.Pubkey)
+				if usepub == e.Event.Pubkey {
 					isModAction = true
 				}
 			}
@@ -339,7 +342,6 @@ func main() {
 						if strings.Contains(e.Event.Pubkey, pub) {
 							log("allowing whitelist for pubkey: " + k.Pubkey)
 							allowMessage = true
-							isWl = true
 						}
 					} else {
 						log("error decoding pubkey: " + k.Pubkey + " " + err.Error())
@@ -349,7 +351,6 @@ func main() {
 				if strings.Contains(e.Event.Pubkey, k.Pubkey) {
 					log("allowing whitelist for pubkey: " + k.Pubkey)
 					allowMessage = true
-					isWl = true
 				}
 			}
 		}
@@ -364,7 +365,6 @@ func main() {
 							log("rejecting for pubkey: " + k.Pubkey)
 							badResp = "blocked pubkey " + k.Pubkey + " reason: " + k.Reason
 							allowMessage = false
-							isWl = false
 						}
 					} else {
 						log("error decoding pubkey: " + k.Pubkey + " " + err.Error())
@@ -400,52 +400,37 @@ func main() {
 			}
 		}
 
-		seenDist := 0.00
-		if allowMessage {
-			// spam duplicate inhibitor
-			for i := range seen {
-				dist, tooSimilar := compareSimilar(i, e.Event.Content)
-				// block unless pubkey is specifically whitelisted
-				if tooSimilar && !isWl {
-					allowMessage = false
-					badResp = "blocked. reason: duplicate message"
-					seenDist = dist
-				}
-			}
-		}
-
-		// message
-		if e.Event.Kind == 1 {
-			if !allowMessage {
-				result.Action = "reject"
-				result.Msg = badResp
-				logFile(fmt.Sprintf("blocked,%.2f,%s,%s,%s,%s\n", seenDist, e.SourceInfo, e.Event.Pubkey, e.Event.Content, time.Now()))
-			} else {
-				logFile(fmt.Sprintf("message,%s,%s,%s\n", e.SourceInfo, e.Event.Pubkey, e.Event.Content))
-
-				if len(e.Event.Content) > 20 && !isWl {
-					seen[e.Event.Content] = time.Now()
-				}
-			}
-		}
-
-		// channel message
-		if e.Event.Kind == 42 {
-			if !allowMessage {
-				result.Action = "reject"
-				result.Msg = badResp
-				logFile(fmt.Sprintf("blocked,%.2f,%s,%s,%s,%s\n", seenDist, e.SourceInfo, e.Event.Pubkey, e.Event.Content, time.Now()))
-			} else {
-				logFile(fmt.Sprintf("cmessage,%s,%s,%s\n", e.SourceInfo, e.Event.Pubkey, e.Event.Content))
-				if len(e.Event.Content) > 20 && !isWl {
-					seen[e.Event.Content] = time.Now()
-				}
-			}
+		if !allowMessage {
+			result.Action = "reject"
+			result.Msg = badResp
 		}
 
 		r, _ := json.Marshal(result)
 		output.WriteString(fmt.Sprintf("%s\n", r))
 		output.Flush()
-	}
 
+		if influxEnabled {
+			blocked := 0
+			allowed := 1
+			if !allowMessage {
+				blocked = 1
+				allowed = 0
+			}
+
+			p := influxdb2.NewPoint(
+				iConfig.Measurement,
+				map[string]string{
+					"kind":  fmt.Sprintf("%d", e.Event.Kind),
+					"relay": relay.ID,
+				},
+				map[string]interface{}{
+					"event":   1,
+					"blocked": blocked,
+					"allowed": allowed,
+				},
+				time.Now())
+			// write asynchronously
+			writeAPI.WritePoint(p)
+		}
+	}
 }
