@@ -382,7 +382,9 @@ func main() {
 		if relay.AllowList.ListKeywords != nil && len(relay.AllowList.ListKeywords) >= 1 && !relay.DefaultMessagePolicy {
 			// relay has whitelist keywords, allow  messages matching any of these keywords to post, deny messages that don't.
 			for _, k := range relay.AllowList.ListKeywords {
-				if strings.Contains(e.Event.Content, k.Keyword) {
+				dEvent := strings.ToLower(e.Event.Content)
+				dKeyword := strings.ToLower(k.Keyword)
+				if strings.Contains(dEvent, dKeyword) {
 					log("allowing for keyword: " + k.Keyword)
 					allowMessage = true
 				}
@@ -392,7 +394,9 @@ func main() {
 		if relay.BlockList.ListKeywords != nil && len(relay.BlockList.ListKeywords) >= 1 {
 			// relay has blacklist keywords, deny messages matching any of these keywords to post
 			for _, k := range relay.BlockList.ListKeywords {
-				if strings.Contains(e.Event.Content, k.Keyword) {
+				dEvent := strings.ToLower(e.Event.Content)
+				dKeyword := strings.ToLower(k.Keyword)
+				if strings.Contains(dEvent, dKeyword) {
 					log("rejecting for keyword: " + k.Keyword)
 					badResp = "blocked. " + k.Keyword + " reason: " + k.Reason
 					allowMessage = false
