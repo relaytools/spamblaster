@@ -96,11 +96,14 @@ type Relay struct {
 		Pubkey string      `json:"pubkey"`
 		Name   interface{} `json:"name"`
 	} `json:"owner"`
+
 	Moderators []struct {
 		ID      string `json:"id"`
-		Pubkey  string `json:"pubkey"`
 		RelayID string `json:"relayId"`
 		UserID  string `json:"userId"`
+		User    struct {
+			Pubkey string `json:"pubkey"`
+		} `json:"user"`
 	} `json:"moderators"`
 }
 
@@ -252,10 +255,7 @@ func main() {
 
 		allowMessage := false
 		if relay.DefaultMessagePolicy {
-			log("policy default: allowing all")
 			allowMessage = true
-		} else {
-			log("policy default: denying all")
 		}
 		badResp := ""
 
@@ -263,7 +263,7 @@ func main() {
 		if e.Event.Kind == 1984 {
 			isModAction := false
 			for _, m := range relay.Moderators {
-				usepub := decodePub(m.Pubkey)
+				usepub := decodePub(m.User.Pubkey)
 				if usepub == e.Event.Pubkey {
 					isModAction = true
 				}
