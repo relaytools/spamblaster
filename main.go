@@ -355,6 +355,20 @@ func main() {
 			}
 		}
 
+		// keywords logic
+		if relay.AllowList.ListKeywords != nil && len(relay.AllowList.ListKeywords) >= 1 && !relay.DefaultMessagePolicy {
+			// relay has whitelist keywords, allow  messages matching any of these keywords to post, deny messages that don't.
+			// todo: what about if they're allow_listed pubkey? (currently this would allow either)
+			for _, k := range relay.AllowList.ListKeywords {
+				dEvent := strings.ToLower(e.Event.Content)
+				dKeyword := strings.ToLower(k.Keyword)
+				if strings.Contains(dEvent, dKeyword) {
+					log("allowing for keyword: " + k.Keyword)
+					allowMessage = true
+				}
+			}
+		}
+
 		if relay.BlockList.ListPubkeys != nil && len(relay.BlockList.ListPubkeys) >= 1 {
 			// relay is in blacklist pubkey mode, mark bad
 			for _, k := range relay.BlockList.ListPubkeys {
@@ -374,19 +388,6 @@ func main() {
 					log("rejecting for pubkey: " + k.Pubkey)
 					badResp = "blocked pubkey " + k.Pubkey + " reason: " + k.Reason
 					allowMessage = false
-				}
-			}
-		}
-
-		// keywords logic
-		if relay.AllowList.ListKeywords != nil && len(relay.AllowList.ListKeywords) >= 1 && !relay.DefaultMessagePolicy {
-			// relay has whitelist keywords, allow  messages matching any of these keywords to post, deny messages that don't.
-			for _, k := range relay.AllowList.ListKeywords {
-				dEvent := strings.ToLower(e.Event.Content)
-				dKeyword := strings.ToLower(k.Keyword)
-				if strings.Contains(dEvent, dKeyword) {
-					log("allowing for keyword: " + k.Keyword)
-					allowMessage = true
 				}
 			}
 		}
