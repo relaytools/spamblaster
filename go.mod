@@ -4,7 +4,6 @@ go 1.21
 
 require (
 	github.com/influxdata/influxdb-client-go/v2 v2.12.3
-	github.com/lithammer/fuzzysearch v1.1.8
 	github.com/nbd-wtf/go-nostr v0.18.12
 	github.com/spf13/viper v1.16.0
 )
