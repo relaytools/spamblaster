@@ -12,8 +12,6 @@ builds:
       - CGO_ENABLED=0
     goos:
       - linux
-      - windows
-      - darwin
     ignore:
       - goos: windows
         goarch: "386"
