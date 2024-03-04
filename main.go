@@ -353,11 +353,6 @@ func main() {
 					log("allowing whitelist for pubkey: " + k.Pubkey)
 					allowMessage = true
 				}
-
-				// allow owners + moderators
-				if isModAction(relay, e) {
-					allowMessage = true
-				}
 			}
 		}
 
@@ -372,6 +367,13 @@ func main() {
 					log("allowing for keyword: " + k.Keyword)
 					allowMessage = true
 				}
+			}
+		// The one specific case you wouldn't want to allow owner+mods is in this AllowList keywords mode
+		// Therefor, we will do the mod detector check here and allow all owners+mods
+		} else {
+			// allow owners + moderators
+			if isModAction(relay, e) {
+				allowMessage = true
 			}
 		}
 
