@@ -353,6 +353,11 @@ func main() {
 					log("allowing whitelist for pubkey: " + k.Pubkey)
 					allowMessage = true
 				}
+
+				// allow owners + moderators
+				if isModAction(relay, e) {
+					allowMessage = true
+				}
 			}
 		}
 
@@ -406,10 +411,7 @@ func main() {
 			}
 		}
 
-		// allow owners + moderators
-		if isModAction(relay, e) {
-			allowMessage = true
-		}
+		
 
 		// NIP59, NIP87, NIP86 (private groups/giftwrap allow)
 		if relay.AllowGiftwrap {
