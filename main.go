@@ -46,11 +46,8 @@ type Relay struct {
 	ID                   string      `json:"id"`
 	Name                 string      `json:"name"`
 	OwnerID              string      `json:"ownerId"`
-	Status               interface{} `json:"status"`
 	DefaultMessagePolicy bool        `json:"default_message_policy"`
-	IP                   interface{} `json:"ip"`
-	Capacity             interface{} `json:"capacity"`
-	Port                 interface{} `json:"port"`
+	AllowGiftwrap		bool        `json:"allow_giftwrap"`
 	AllowList            struct {
 		ID           string `json:"id"`
 		RelayID      string `json:"relayId"`
@@ -177,6 +174,20 @@ func queryRelay(oldrelay Relay) (Relay, error) {
 	return relay, nil
 }
 
+func isModAction(relay Relay, e StrfryEvent) bool {
+	isModAction := false
+	for _, m := range relay.Moderators {
+		usepub := decodePub(m.User.Pubkey)
+		if usepub == e.Event.Pubkey {
+			isModAction = true
+		}
+	}
+	if relay.Owner.Pubkey == e.Event.Pubkey {
+		isModAction = true
+	}
+	return isModAction
+}
+
 type influxdbConfig struct {
 	Url         string `mapstructure:"INFLUXDB_URL"`
 	Token       string `mapstructure:"INFLUXDB_TOKEN"`
@@ -197,7 +208,7 @@ func main() {
 	var relay Relay
 	relay, err1 = queryRelay(relay)
 	if err1 != nil {
-		log("there was an error fetching relay, using cache or nil")
+		log("there was an error fetching relay, using cache or nil: " + err1.Error())
 	}
 
 	ticker := time.NewTicker(30 * time.Second)
@@ -206,7 +217,7 @@ func main() {
 			<-ticker.C
 			relay, err1 = queryRelay(relay)
 			if err1 != nil {
-				log("there was an error fetching relay, using cache or nil")
+				log("there was an error fetching relay, using cache or nil" + err1.Error())
 			}
 		}
 	}()
@@ -261,17 +272,7 @@ func main() {
 
 		// moderation retroactive delete
 		if e.Event.Kind == 1984 {
-			isModAction := false
-			for _, m := range relay.Moderators {
-				usepub := decodePub(m.User.Pubkey)
-				if usepub == e.Event.Pubkey {
-					isModAction = true
-				}
-			}
-			if relay.Owner.Pubkey == e.Event.Pubkey {
-				isModAction = true
-			}
-			if isModAction {
+			if isModAction(relay, e) {
 				log(fmt.Sprintf("1984 request from %s>", e.Event.Pubkey))
 				// perform deletion of a single event
 				// grab the event id
@@ -402,6 +403,20 @@ func main() {
 					badResp = "blocked. " + k.Keyword + " reason: " + k.Reason
 					allowMessage = false
 				}
+			}
+		}
+
+		// allow owners + moderators
+		if isModAction(relay, e) {
+			allowMessage = true
+		}
+
+		// NIP59, NIP87, NIP86 (private groups/giftwrap allow)
+		if relay.AllowGiftwrap {
+			if e.Event.Kind == 13 || e.Event.Kind == 1059 || e.Event.Kind == 1060 || e.Event.Kind == 24 || e.Event.Kind == 25 || e.Event.Kind == 26 || e.Event.Kind == 27 || e.Event.Kind == 35834 {
+				// allow all gifts
+				allowMessage = true
+				log("allowing for gift, kind: " + fmt.Sprintf("%d", e.Event.Kind))
 			}
 		}
 
