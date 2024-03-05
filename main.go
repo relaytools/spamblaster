@@ -48,6 +48,7 @@ type Relay struct {
 	OwnerID              string      `json:"ownerId"`
 	DefaultMessagePolicy bool        `json:"default_message_policy"`
 	AllowGiftwrap		bool        `json:"allow_giftwrap"`
+	AllowTagged 		bool        `json:"allow_tagged"`
 	AllowList            struct {
 		ID           string `json:"id"`
 		RelayID      string `json:"relayId"`
@@ -337,26 +338,36 @@ func main() {
 		if !relay.DefaultMessagePolicy {
 			// relay is in whitelist pubkey mode, only allow these pubkeys to post
 			for _, k := range relay.AllowList.ListPubkeys {
+				usekey := k.Pubkey
 				if strings.Contains(k.Pubkey, "npub") {
 					if _, v, err := nip19.Decode(k.Pubkey); err == nil {
-						pub := v.(string)
-						if strings.Contains(e.Event.Pubkey, pub) {
-							log("allowing whitelist for pubkey: " + k.Pubkey)
-							allowMessage = true
-						}
+						usekey = v.(string)
 					} else {
 						log("error decoding pubkey: " + k.Pubkey + " " + err.Error())
 					}
 				}
 
-				if strings.Contains(e.Event.Pubkey, k.Pubkey) {
-					log("allowing whitelist for pubkey: " + k.Pubkey)
+				if strings.Contains(e.Event.Pubkey, usekey) {
+					log("allowing whitelist for pubkey: " + usekey)
 					allowMessage = true
+				}
+
+				// if we're allowing tags, check if pubkey is tagged in the messages ptags
+				if relay.AllowTagged {
+					if e.Event.Tags != nil && len(e.Event.Tags) >= 1  {
+						for _, x := range e.Event.Tags {
+							if x[0] == "p" {
+								if x[1] == usekey {
+									allowMessage = true
+								}
+							}
+						}
+					}
 				}
 			}
 		}
 
-		// keywords logic
+		// allow keywords logic
 		if relay.AllowList.ListKeywords != nil && len(relay.AllowList.ListKeywords) >= 1 && !relay.DefaultMessagePolicy {
 			// relay has whitelist keywords, allow  messages matching any of these keywords to post, deny messages that don't.
 			// todo: what about if they're allow_listed pubkey? (currently this would allow either)
