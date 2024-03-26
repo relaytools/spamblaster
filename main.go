@@ -68,6 +68,13 @@ type Relay struct {
 			Reason      string      `json:"reason"`
 			ExpiresAt   interface{} `json:"expires_at"`
 		} `json:"list_pubkeys"`
+		ListKinds []struct {
+			ID          string      `json:"id"`
+			AllowListID string      `json:"AllowListId"`
+			BlockListID interface{} `json:"BlockListId"`
+			Kind      int      `json:"kind"`
+			Reason      string      `json:"reason"`
+		} `json:"list_kinds"`
 	} `json:"allow_list"`
 	BlockList struct {
 		ID           string `json:"id"`
@@ -88,6 +95,13 @@ type Relay struct {
 			Reason      string      `json:"reason"`
 			ExpiresAt   interface{} `json:"expires_at"`
 		} `json:"list_pubkeys"`
+		ListKinds []struct {
+			ID          string      `json:"id"`
+			AllowListID string      `json:"AllowListId"`
+			BlockListID interface{} `json:"BlockListId"`
+			Kind      int      `json:"kind"`
+			Reason      string      `json:"reason"`
+		} `json:"list_kinds"`
 	} `json:"block_list"`
 	Owner struct {
 		ID     string      `json:"id"`
@@ -388,6 +402,30 @@ func main() {
 			}
 		}
 
+		// if relay is in Deny mode, and message was being blocked by the ACLs above this, we need to check if the kind is in the allow list, and allow it
+		if !relay.DefaultMessagePolicy {
+			if relay.AllowList.ListKinds != nil && len(relay.AllowList.ListKinds) >= 1 {
+				if !allowMessage {
+					for _, k := range relay.AllowList.ListKinds {
+						if e.Event.Kind == k.Kind {
+							log("allowing for kind: " + fmt.Sprintf("%d", k.Kind))
+							allowMessage = true
+						}
+					}
+				}
+			}
+		}
+
+		// NIP59, NIP87, NIP86 (private groups/giftwrap allow)
+		if relay.AllowGiftwrap {
+			if e.Event.Kind == 13 || e.Event.Kind == 1059 || e.Event.Kind == 1060 || e.Event.Kind == 24 || e.Event.Kind == 25 || e.Event.Kind == 26 || e.Event.Kind == 27 || e.Event.Kind == 35834 {
+				// allow all gifts
+				allowMessage = true
+				log("allowing for gift, kind: " + fmt.Sprintf("%d", e.Event.Kind))
+			}
+		}
+
+		// blocklist for pubkeys overrides the ACLs above this
 		if relay.BlockList.ListPubkeys != nil && len(relay.BlockList.ListPubkeys) >= 1 {
 			// relay is in blacklist pubkey mode, mark bad
 			for _, k := range relay.BlockList.ListPubkeys {
@@ -411,6 +449,7 @@ func main() {
 			}
 		}
 
+		// blocklist for keywords overrides the ACLs above this
 		if relay.BlockList.ListKeywords != nil && len(relay.BlockList.ListKeywords) >= 1 {
 			// relay has blacklist keywords, deny messages matching any of these keywords to post
 			for _, k := range relay.BlockList.ListKeywords {
@@ -424,14 +463,16 @@ func main() {
 			}
 		}
 
-		
-
-		// NIP59, NIP87, NIP86 (private groups/giftwrap allow)
-		if relay.AllowGiftwrap {
-			if e.Event.Kind == 13 || e.Event.Kind == 1059 || e.Event.Kind == 1060 || e.Event.Kind == 24 || e.Event.Kind == 25 || e.Event.Kind == 26 || e.Event.Kind == 27 || e.Event.Kind == 35834 {
-				// allow all gifts
-				allowMessage = true
-				log("allowing for gift, kind: " + fmt.Sprintf("%d", e.Event.Kind))
+		// Kind checking
+		// if a kind is blocked, it overrides all other ACLs above this
+		if relay.BlockList.ListKinds != nil && len(relay.BlockList.ListKinds) >= 1 {
+			for _, k := range relay.BlockList.ListKinds {
+				log("checking kind: " + fmt.Sprintf("%d, %d", k.Kind, e.Event.Kind))
+				if e.Event.Kind == k.Kind {
+					log("rejecting for kind: " + fmt.Sprintf("%d", k.Kind))
+					badResp = "blocked kind " + fmt.Sprintf("%d", k.Kind) + " reason: " + k.Reason
+					allowMessage = false
+				}
 			}
 		}
 
