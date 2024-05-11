@@ -384,14 +384,20 @@ func main() {
 		// allow keywords logic
 		if relay.AllowList.ListKeywords != nil && len(relay.AllowList.ListKeywords) >= 1 && !relay.DefaultMessagePolicy {
 			// relay has whitelist keywords, allow  messages matching any of these keywords to post, deny messages that don't.
-			// todo: what about if they're allow_listed pubkey? (currently this would allow either)
+			// If they're allow_listed pubkey, we still want to obey the keyword list here and only allow the keywords.
+			foundKeyword := false
 			for _, k := range relay.AllowList.ListKeywords {
 				dEvent := strings.ToLower(e.Event.Content)
 				dKeyword := strings.ToLower(k.Keyword)
 				if strings.Contains(dEvent, dKeyword) {
 					log("allowing for keyword: " + k.Keyword)
-					allowMessage = true
+					foundKeyword = true
 				}
+			}
+			if foundKeyword {
+				allowMessage = true
+			} else {
+				allowMessage = false
 			}
 		// The one specific case you wouldn't want to allow owner+mods is in this AllowList keywords mode
 		// Therefor, we will do the mod detector check here and allow all owners+mods
