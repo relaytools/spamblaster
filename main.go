@@ -287,25 +287,60 @@ func main() {
 		badResp := ""
 
 		// moderation retroactive delete
-		if e.Event.Kind == 1984 {
+		if e.Event.Kind == 1984 || (e.Event.Kind == 7 && ( e.Event.Content == "❌" || e.Event.Content == "🔨")) {
+
 			if isModAction(relay, e) {
-				log(fmt.Sprintf("1984 request from %s>", e.Event.Pubkey))
-				// perform deletion of a single event
-				// grab the event id
 
 				thisReason := ""
 				thisEvent := ""
-				for _, x := range e.Event.Tags {
-					if x[0] == "e" {
-						thisEvent = x[1]
-						if len(x) == 3 {
-							thisReason = x[2]
+				thisPubkey := ""
+				thisAction := ""
+
+				if e.Event.Kind == 1984 {
+					log(fmt.Sprintf("1984 request from %s>", e.Event.Pubkey))
+					for _, x := range e.Event.Tags {
+						if x[0] == "e" {
+							thisEvent = x[1]
+							thisReason = "mod action by " + e.Event.Pubkey + ": delete event"
 						}
+					}
+					for _, x := range e.Event.Tags {
+						if x[0] == "p" {
+							thisPubkey = x[1]
+							thisReason = "mod action by " + e.Event.Pubkey + ": block and delete pubkey"
+						}
+					}
+					if thisEvent != "" {
+						thisAction = "deleteEvent"
+					} else if thisPubkey != "" {
+						thisAction = "blockAndDeletePubkey"
+					}
+				} else if e.Event.Kind == 7 && e.Event.Content == "❌" {
+					// delete event
+					for _, x := range e.Event.Tags {
+						if x[0] == "e" {
+							thisEvent = x[1]
+							thisReason = "mod action by " + e.Event.Pubkey + ": delete event"
+						}
+					}
+					if thisEvent != "" {
+						thisAction = "deleteEvent"
+					}
+				} else if e.Event.Kind == 7 && e.Event.Content == "🔨" {
+					// delete the events related to this pubkey
+					for _, x := range e.Event.Tags {
+						if x[0] == "p" {
+							thisPubkey = x[1]
+							thisReason = "mod action by " + e.Event.Pubkey + ": block and delete pubkey"
+						}
+					}
+					if thisPubkey != "" {
+						thisAction = "blockAndDeletePubkey"
 					}
 				}
 
-				if thisEvent != "" {
-					log(fmt.Sprintf("received 1984 from mod: %s, delete event <%s>, reason: %s", e.Event.Pubkey, thisEvent, thisReason))
+				if thisAction == "deleteEvent" {
+					log(fmt.Sprintf("received action from mod: delete event <%s>, reason: %s", thisEvent, thisReason))
 					// shell out
 					filter := fmt.Sprintf("{\"ids\": [\"%s\"]}", thisEvent)
 					cmd := exec.Command("/app/strfry", "delete", "--filter", filter)
@@ -314,25 +349,8 @@ func main() {
 						log(fmt.Sprintln("could not run command: ", err))
 					}
 					log(fmt.Sprintln("strfry command output: ", string(out)))
-
-					//cmd.Run()
-				}
-
-				// if modaction is for a pubkey, post back to the API for block_list pubkey
-				// also delete the events related to this pubkey
-				thisPubkey := ""
-				for _, x := range e.Event.Tags {
-					if x[0] == "p" {
-						thisPubkey = x[1]
-						if len(x) == 3 {
-							thisReason = x[2]
-						}
-					}
-				}
-
-				// event should be blank if we're getting a report about just a pubkey
-				if thisPubkey != "" && thisEvent == "" {
-					log(fmt.Sprintf("received 1984 from mod: %s, block and delete pubkey <%s>, reason: %s", e.Event.Pubkey, thisPubkey, thisReason))
+				} else if thisAction == "blockAndDeletePubkey" {
+					log(fmt.Sprintf("received action from mod: block and delete pubkey <%s>, reason: %s", thisPubkey, thisReason))
 					// shell out
 					filter := fmt.Sprintf("{\"authors\": [\"%s\"]}", thisPubkey)
 					cmd := exec.Command("/app/strfry", "delete", "--filter", filter)
@@ -341,10 +359,7 @@ func main() {
 						log(fmt.Sprintln("could not run command: ", err))
 					}
 					log(fmt.Sprintln("strfry command output: ", string(out)))
-					//cmd.Run()
-					// TODO: call to api
 				}
-
 			}
 		}
 
