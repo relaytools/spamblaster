@@ -49,6 +49,7 @@ type Relay struct {
 	DefaultMessagePolicy bool        `json:"default_message_policy"`
 	AllowGiftwrap		bool        `json:"allow_giftwrap"`
 	AllowTagged 		bool        `json:"allow_tagged"`
+	AllowKeywordPubkey   bool        `json:"allow_keyword_pubkey"`
 	AllowList            struct {
 		ID           string `json:"id"`
 		RelayID      string `json:"relayId"`
@@ -384,26 +385,45 @@ func main() {
 		// allow keywords logic
 		if relay.AllowList.ListKeywords != nil && len(relay.AllowList.ListKeywords) >= 1 && !relay.DefaultMessagePolicy {
 			// relay has whitelist keywords, allow  messages matching any of these keywords to post, deny messages that don't.
-			// If they're allow_listed pubkey, we still want to obey the keyword list here and only allow the keywords.
+			// If they're allow_listed pubkey, we check the setting for allow_keyword_pubkey.
+			// If allow_keyword_pubkey is 'true' still want to obey the keyword list here and only allow the keywords.
+			// Else if allow_keyword_pubkey is 'false' we will allow the message if it matches the keyword list.
 			foundKeyword := false
 			for _, k := range relay.AllowList.ListKeywords {
 				dEvent := strings.ToLower(e.Event.Content)
 				dKeyword := strings.ToLower(k.Keyword)
 				if strings.Contains(dEvent, dKeyword) {
-					log("allowing for keyword: " + k.Keyword)
+					log("found keyword: " + k.Keyword)
 					foundKeyword = true
 				}
 			}
-			if foundKeyword {
-				allowMessage = true
+			log(fmt.Sprintf("allow_keyword_pubkey: %t", relay.AllowKeywordPubkey))
+
+			if relay.AllowKeywordPubkey {
+				if foundKeyword && (allowMessage || isModAction(relay, e)) {
+					log("allow_keyword_pubkey=true, allowMessage=true, allowing for BOTH")
+					allowMessage = true
+				} else {
+					log("allow_keyword_pubkey=true, keyword AND pubkey not found, deny")
+					allowMessage = false
+				}
 			} else {
-				allowMessage = false
+				if foundKeyword {
+					log("allow_keyword_pubkey=false, pubkey allowed OR keyword allowed, allow")
+					allowMessage = true
+				}
+				// mod allowance check is required here, in keyword mode with allow_keyword_pubkey set to false
+				if isModAction(relay, e) {
+					log("allowing for mod: " + e.Event.Pubkey)
+					allowMessage = true
+				}
 			}
 		// The one specific case you wouldn't want to allow owner+mods is in this AllowList keywords mode
-		// Therefor, we will do the mod detector check here and allow all owners+mods
+		// Therefor, we will do the mod detector check here and allow all owners+mods for non keyword mode
 		} else {
 			// allow owners + moderators
 			if isModAction(relay, e) {
+				log("allowing for mod: " + e.Event.Pubkey)
 				allowMessage = true
 			}
 		}
