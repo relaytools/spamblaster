@@ -360,6 +360,13 @@ func main() {
 					}
 					log(fmt.Sprintln("strfry command output: ", string(out)))
 				}
+
+				// don't publish mod actions, use shadowReject to silently drop them.
+				result.Action = "shadowReject"
+				r, _ := json.Marshal(result)
+				output.WriteString(fmt.Sprintf("%s\n", r))
+				output.Flush()
+				continue
 			}
 		}
 
