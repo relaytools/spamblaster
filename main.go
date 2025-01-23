@@ -43,13 +43,13 @@ type StrfryResult struct {
 
 // Relay Creator Schema
 type Relay struct {
-	ID                   string      `json:"id"`
-	Name                 string      `json:"name"`
-	OwnerID              string      `json:"ownerId"`
-	DefaultMessagePolicy bool        `json:"default_message_policy"`
-	AllowGiftwrap		bool        `json:"allow_giftwrap"`
-	AllowTagged 		bool        `json:"allow_tagged"`
-	AllowKeywordPubkey   bool        `json:"allow_keyword_pubkey"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	OwnerID              string `json:"ownerId"`
+	DefaultMessagePolicy bool   `json:"default_message_policy"`
+	AllowGiftwrap        bool   `json:"allow_giftwrap"`
+	AllowTagged          bool   `json:"allow_tagged"`
+	AllowKeywordPubkey   bool   `json:"allow_keyword_pubkey"`
 	AllowList            struct {
 		ID           string `json:"id"`
 		RelayID      string `json:"relayId"`
@@ -73,7 +73,7 @@ type Relay struct {
 			ID          string      `json:"id"`
 			AllowListID string      `json:"AllowListId"`
 			BlockListID interface{} `json:"BlockListId"`
-			Kind      int      `json:"kind"`
+			Kind        int         `json:"kind"`
 			Reason      string      `json:"reason"`
 		} `json:"list_kinds"`
 	} `json:"allow_list"`
@@ -100,7 +100,7 @@ type Relay struct {
 			ID          string      `json:"id"`
 			AllowListID string      `json:"AllowListId"`
 			BlockListID interface{} `json:"BlockListId"`
-			Kind      int      `json:"kind"`
+			Kind        int         `json:"kind"`
 			Reason      string      `json:"reason"`
 		} `json:"list_kinds"`
 	} `json:"block_list"`
@@ -227,7 +227,7 @@ func main() {
 		log("there was an error fetching relay, using cache or nil: " + err1.Error())
 	}
 
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(60 * time.Second)
 	go func() {
 		for {
 			<-ticker.C
@@ -287,7 +287,7 @@ func main() {
 		badResp := ""
 
 		// moderation retroactive delete
-		if e.Event.Kind == 1984 || (e.Event.Kind == 7 && ( e.Event.Content == "❌" || e.Event.Content == "🔨")) {
+		if e.Event.Kind == 1984 || (e.Event.Kind == 7 && (e.Event.Content == "❌" || e.Event.Content == "🔨")) {
 
 			if isModAction(relay, e) {
 
@@ -384,6 +384,8 @@ func main() {
 					}
 				}
 
+				// TODO: this is not the best way to match the pubkey
+				// account for blank string here at least
 				if strings.Contains(e.Event.Pubkey, usekey) {
 					log("allowing whitelist for pubkey: " + usekey)
 					allowMessage = true
@@ -391,10 +393,11 @@ func main() {
 
 				// if we're allowing tags, check if pubkey is tagged in the messages ptags
 				if relay.AllowTagged {
-					if e.Event.Tags != nil && len(e.Event.Tags) >= 1  {
+					if e.Event.Tags != nil && len(e.Event.Tags) >= 1 {
 						for _, x := range e.Event.Tags {
 							if x[0] == "p" {
 								if x[1] == usekey {
+									log("allowing whitelist for tagged pubkey: " + usekey)
 									allowMessage = true
 								}
 							}
@@ -440,8 +443,8 @@ func main() {
 					allowMessage = true
 				}
 			}
-		// The one specific case you wouldn't want to allow owner+mods is in this AllowList keywords mode
-		// Therefor, we will do the mod detector check here and allow all owners+mods for non keyword mode
+			// The one specific case you wouldn't want to allow owner+mods is in this AllowList keywords mode
+			// Therefor, we will do the mod detector check here and allow all owners+mods for non keyword mode
 		} else {
 			// allow owners + moderators
 			if isModAction(relay, e) {
@@ -461,15 +464,6 @@ func main() {
 						}
 					}
 				}
-			}
-		}
-
-		// NIP59, NIP87, NIP86 (private groups/giftwrap allow)
-		if relay.AllowGiftwrap {
-			if e.Event.Kind == 13 || e.Event.Kind == 1059 || e.Event.Kind == 1060 || e.Event.Kind == 24 || e.Event.Kind == 25 || e.Event.Kind == 26 || e.Event.Kind == 27 || e.Event.Kind == 35834 {
-				// allow all gifts
-				allowMessage = true
-				log("allowing for gift, kind: " + fmt.Sprintf("%d", e.Event.Kind))
 			}
 		}
 
@@ -508,6 +502,15 @@ func main() {
 					badResp = "blocked. " + k.Keyword + " reason: " + k.Reason
 					allowMessage = false
 				}
+			}
+		}
+
+		// NIP59, NIP87, NIP86 (private groups/giftwrap allow)
+		if relay.AllowGiftwrap {
+			if e.Event.Kind == 13 || e.Event.Kind == 1059 || e.Event.Kind == 1060 || e.Event.Kind == 24 || e.Event.Kind == 25 || e.Event.Kind == 26 || e.Event.Kind == 27 || e.Event.Kind == 35834 {
+				// allow all gifts
+				allowMessage = true
+				log("allowing for gift, kind: " + fmt.Sprintf("%d", e.Event.Kind))
 			}
 		}
 
