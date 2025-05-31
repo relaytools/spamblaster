@@ -118,15 +118,27 @@ type Relay struct {
 			Pubkey string `json:"pubkey"`
 		} `json:"user"`
 	} `json:"moderators"`
+
+	/*
+		AclSources []struct {
+			ID      string `json:"id"`
+			RelayID string `json:"relayId"`
+			AclType string `json:"aclType"`
+			Url     string `json:"url"`
+		} `json:"acl_sources"`
+	*/
+
+	AclSources []AclSource `json:"acl_sources"`
+}
+
+type AclSource struct {
+	ID      string `json:"id"`
+	RelayID string `json:"relayId"`
+	AclType string `json:"aclType"`
+	Url     string `json:"url"`
 }
 
 var errlog = bufio.NewWriter(os.Stderr)
-
-var logfile *os.File
-
-func logFile(message string) {
-	log(message)
-}
 
 func log(message string) {
 	errlog.WriteString(fmt.Sprintln(message))
@@ -213,8 +225,6 @@ type influxdbConfig struct {
 }
 
 func main() {
-	defer logfile.Close()
-
 	var reader = bufio.NewReader(os.Stdin)
 	var output = bufio.NewWriter(os.Stdout)
 	defer output.Flush()
@@ -222,18 +232,77 @@ func main() {
 
 	var err1 error
 	var relay Relay
+
 	relay, err1 = queryRelay(relay)
 	if err1 != nil {
 		log("there was an error fetching relay, using cache or nil: " + err1.Error())
 	}
 
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	aclListener := make(chan []AclSource)
+
 	go func() {
 		for {
 			<-ticker.C
 			relay, err1 = queryRelay(relay)
 			if err1 != nil {
 				log("there was an error fetching relay, using cache or nil" + err1.Error())
+			}
+			aclListener <- relay.AclSources
+		}
+	}()
+
+	go func() {
+		//var sources = make(map[string]bool)
+		var oldAclSources []AclSource
+		var allTimers = make(map[string]*time.Ticker)
+
+		for {
+			a := <-aclListener
+			if len(oldAclSources) != len(a) {
+				log("lengths different")
+				for _, as := range a {
+					foundOld := false
+					for _, o := range oldAclSources {
+						if o.ID == as.ID {
+							// already done
+							log(fmt.Sprintf("already done %s", as.Url))
+							foundOld = true
+							continue
+						}
+					}
+					if !foundOld {
+						// setup new acl
+						log(fmt.Sprintf("setting up new %s", as.Url))
+						newTimer := time.NewTicker(5 * time.Second)
+						allTimers[as.ID] = newTimer
+
+						go func(thisAcl AclSource) {
+							for {
+								<-newTimer.C
+								log(fmt.Sprintf("new tick! from %s", thisAcl.ID))
+							}
+						}(as)
+					}
+				}
+
+				// cleanup deleted
+				for _, o := range oldAclSources {
+					foundNew := false
+					for _, aa := range a {
+						if aa.ID == o.ID {
+							foundNew = true
+						}
+					}
+					if !foundNew {
+						// cleanup
+						log(fmt.Sprintf("cleaning up %s ", o.Url))
+						allTimers[o.ID].Stop()
+					}
+				}
+				oldAclSources = a
 			}
 		}
 	}()
