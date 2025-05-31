@@ -316,7 +316,7 @@ func fetchNip05(aclSource AclSource, m *sync.Map) bool {
 		return false
 	}
 
-	updateSyncMapFromNip05(nip05DomainAcl, m, "nip05")
+	updateSyncMapFromNip05(nip05DomainAcl, m, aclSource.ID)
 
 	log(fmt.Sprintf("Successfully processed NIP05 Domain ACL with %d pubkeys", len(nip05DomainAcl.Names)))
 	return true
@@ -324,13 +324,14 @@ func fetchNip05(aclSource AclSource, m *sync.Map) bool {
 
 func updateSyncMapFromNip05(np NIP05DomainACL, m *sync.Map, source string) {
 	for _, p := range np.Names {
-		m.Store(p, source)
+		m.LoadOrStore(p, source)
 	}
+	// TODO: cleanup
 }
 
 func updateSyncMapFromGrapevine(gv GrapevineACL, m *sync.Map, source string) {
 	for _, p := range gv.Data.Pubkeys {
-		m.Store(p, source)
+		m.LoadOrStore(p, source)
 		// cleanup pubkeys that have been removed from Grapevine
 		//cleanupSyncMapFromGrapevine()
 	}
@@ -375,6 +376,13 @@ func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
 		// cleanup pubkeys that have been removed from ListPubkeys
 		cleanupSyncMapFromRelay(relay.AllowList.ListPubkeys, m)
 	}
+
+	counter := 0
+	m.Range(func(k, v interface{}) bool {
+		counter = counter + 1
+		return true
+	})
+	log(fmt.Sprintf("total pubkeys in map: %d", counter))
 }
 
 func cleanupSyncMapFromRelay(lp []ListPubkey, m *sync.Map) {
@@ -461,10 +469,18 @@ func main() {
 						}
 					}
 					if !foundOld {
-						// setup new acl
+						// setup new acl (initial fetch)
 						log(fmt.Sprintf("setting up new %s:%s", as.Url, as.ID))
+						if as.AclType == "grapevine" {
+							fetchGrapevine(as, &pubkeyMap)
+						} else if as.AclType == "nip05" {
+							fetchNip05(as, &pubkeyMap)
+						} else {
+							log("unknown type" + as.AclType)
+						}
 
-						newTimer := time.NewTicker(10 * time.Second)
+						// setup new acl (ticker)
+						newTimer := time.NewTicker(30 * time.Second)
 						allTimers[as.ID] = newTimer
 
 						go func(thisAcl AclSource) {
@@ -497,6 +513,18 @@ func main() {
 						// cleanup
 						log(fmt.Sprintf("cleaning up %s ", o.Url))
 						allTimers[o.ID].Stop()
+						// TODO cleanup the pubkeyMap
+						var deletes []any
+						pubkeyMap.Range(func(key, value any) bool {
+							if value == o.ID {
+								deletes = append(deletes, key)
+							}
+							return true
+						})
+						log(fmt.Sprintf("deleting %d pubkeys from map source removal", len(deletes)))
+						for _, d := range deletes {
+							pubkeyMap.Delete(d)
+						}
 					}
 				}
 				oldAclSources = a
