@@ -132,6 +132,20 @@ type AclSource struct {
 	Url     string `json:"url"`
 }
 
+type GrapevineACL struct {
+	Success bool `json:"success"`
+	Data    struct {
+		Query      string   `json:"query"`
+		NumPubkeys int      `json:"numPubkeys"`
+		Pubkeys    []string `json:"pubkeys"`
+	} `json:"data"`
+	Kinds []int `json:"kinds,omitempty"`
+}
+
+type NIP05DomainACL struct {
+	Names map[string]string `json:"names"`
+}
+
 var logfile *os.File
 var errlog = bufio.NewWriter(os.Stderr)
 
@@ -216,6 +230,110 @@ func queryRelay(oldrelay Relay) (Relay, error) {
 	}
 
 	return relay, nil
+}
+
+func fetchGrapevine(aclSource AclSource, m *sync.Map) bool {
+	// Set a timeout for the HTTP request
+	client := &http.Client{
+		Timeout: 20 * time.Second,
+	}
+
+	res, err := client.Get(aclSource.Url)
+	if err != nil {
+		log(fmt.Sprintf("Error fetching Grapevine ACL: %s", err.Error()))
+		return false
+	}
+	defer res.Body.Close()
+	log(fmt.Sprintf("HTTP GET successful with status code: %d", res.StatusCode))
+
+	if res.StatusCode != 200 {
+		log(fmt.Sprintf("Grapevine ACL status code error: %d", res.StatusCode))
+		return false
+	}
+
+	body, readErr := io.ReadAll(res.Body)
+	if readErr != nil {
+		log(fmt.Sprintf("Error reading Grapevine ACL response: %s", readErr.Error()))
+		return false
+	}
+
+	var grapevineAcl GrapevineACL
+
+	jsonErr := json.Unmarshal(body, &grapevineAcl)
+	if jsonErr != nil {
+		log(fmt.Sprintf("Error unmarshaling Grapevine ACL: %s", jsonErr.Error()))
+		return false
+	}
+
+	updateSyncMapFromGrapevine(grapevineAcl, m, aclSource.ID)
+
+	log(fmt.Sprintf("Successfully processed Grapevine ACL with %d(%d) pubkeys", len(grapevineAcl.Data.Pubkeys), grapevineAcl.Data.NumPubkeys))
+	return true
+}
+
+func fetchNip05(aclSource AclSource, m *sync.Map) bool {
+	log(fmt.Sprintf("Fetching NIP05 Domain ACL from: %s", aclSource.Url))
+
+	// Ensure the URL ends with /.well-known/nostr.json
+	processedUrl := aclSource.Url
+	if !strings.HasSuffix(processedUrl, "/.well-known/nostr.json") {
+		if !strings.HasSuffix(processedUrl, "/") {
+			processedUrl += "/"
+		}
+		processedUrl += ".well-known/nostr.json"
+	}
+
+	log(fmt.Sprintf("Attempting HTTP GET to: %s", processedUrl))
+
+	// Set a timeout for the HTTP request
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	res, err := client.Get(processedUrl)
+	if err != nil {
+		log(fmt.Sprintf("Error fetching NIP05 Domain ACL: %s", err.Error()))
+		return false
+	}
+	defer res.Body.Close()
+	log(fmt.Sprintf("HTTP GET successful with status code: %d", res.StatusCode))
+
+	if res.StatusCode != 200 {
+		log(fmt.Sprintf("NIP05 Domain ACL status code error: %d", res.StatusCode))
+		return false
+	}
+
+	body, readErr := io.ReadAll(res.Body)
+	if readErr != nil {
+		log(fmt.Sprintf("Error reading NIP05 Domain ACL response: %s", readErr.Error()))
+		return false
+	}
+
+	var nip05DomainAcl NIP05DomainACL
+	jsonErr := json.Unmarshal(body, &nip05DomainAcl)
+	if jsonErr != nil {
+		log(fmt.Sprintf("Error unmarshaling NIP05 Domain ACL: %s", jsonErr.Error()))
+		return false
+	}
+
+	updateSyncMapFromNip05(nip05DomainAcl, m, "nip05")
+
+	log(fmt.Sprintf("Successfully processed NIP05 Domain ACL with %d pubkeys", len(nip05DomainAcl.Names)))
+	return true
+}
+
+func updateSyncMapFromNip05(np NIP05DomainACL, m *sync.Map, source string) {
+	for _, p := range np.Names {
+		m.Store(p, source)
+	}
+}
+
+func updateSyncMapFromGrapevine(gv GrapevineACL, m *sync.Map, source string) {
+	for _, p := range gv.Data.Pubkeys {
+		m.Store(p, source)
+		// cleanup pubkeys that have been removed from Grapevine
+		//cleanupSyncMapFromGrapevine()
+	}
 }
 
 func isModAction(relay Relay, e StrfryEvent) bool {
@@ -354,8 +472,14 @@ func main() {
 								<-newTimer.C
 
 								// here we kick off a new acl listener
-
 								log(fmt.Sprintf("new tick! from %s", thisAcl.ID))
+								if thisAcl.AclType == "grapevine" {
+									fetchGrapevine(thisAcl, &pubkeyMap)
+								} else if thisAcl.AclType == "nip05" {
+									fetchNip05(thisAcl, &pubkeyMap)
+								} else {
+									log("unknown type" + thisAcl.AclType)
+								}
 							}
 						}(as)
 					}
