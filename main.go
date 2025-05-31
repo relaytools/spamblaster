@@ -148,31 +148,37 @@ type NIP05DomainACL struct {
 
 var logfile *os.File
 var errlog = bufio.NewWriter(os.Stderr)
+var pubkeyMap sync.Map
 
+// strfry was not passing through the logs, but now it seems to work.
+// an intermittant logging problem that does not affect the rest of the operations
+// logging to a file can be helpful in this case (disabled)
 func initLogging() error {
-	var err error
-	logfile, err = os.OpenFile("spamblaster.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		errlog.WriteString(fmt.Sprintf("Error opening log file: %v\n", err))
-		errlog.Flush()
-		return err
-	}
+	/*
+		var err error
+		logfile, err = os.OpenFile("spamblaster.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			errlog.WriteString(fmt.Sprintf("Error opening log file: %v\n", err))
+			errlog.Flush()
+			return err
+		}
+	*/
 	return nil
 }
 
 func log(message string) {
 	// Get current timestamp
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	formattedMsg := fmt.Sprintf("[%s] %s", timestamp, message)
+	//timestamp := time.Now().Format("2006-01-02 15:04:05")
+	//formattedMsg := fmt.Sprintf("[%s] %s", timestamp, message)
 
 	// Write to stderr
-	errlog.WriteString(formattedMsg + "\n")
+	errlog.WriteString(message + "\n")
 	errlog.Flush()
 
 	// Write to log file if initialized
-	if logfile != nil {
-		logfile.WriteString(formattedMsg + "\n")
-	}
+	//if logfile != nil {
+	//	logfile.WriteString(formattedMsg + "\n")
+	//}
 }
 
 func decodePub(pubkey string) string {
@@ -326,15 +332,54 @@ func updateSyncMapFromNip05(np NIP05DomainACL, m *sync.Map, source string) {
 	for _, p := range np.Names {
 		m.LoadOrStore(p, source)
 	}
-	// TODO: cleanup
+	cleanupSyncMapFromNip05(np, m, source)
+}
+
+func cleanupSyncMapFromNip05(np NIP05DomainACL, m *sync.Map, source string) {
+	m.Range(func(k, v interface{}) bool {
+		if v != source {
+			return true
+		}
+		notfound := true
+		for _, i := range np.Names {
+			if i == k {
+				notfound = false
+			}
+		}
+		if notfound {
+			log(fmt.Sprintf("removing entry for %s :%s", k, source))
+			m.Delete(k)
+		}
+		return true
+	})
+
+}
+
+func cleanupSyncMapFromGrapevine(gv GrapevineACL, m *sync.Map, source string) {
+	m.Range(func(k, v interface{}) bool {
+		if v != source {
+			return true
+		}
+		notfound := true
+		for _, i := range gv.Data.Pubkeys {
+			if i == k {
+				notfound = false
+			}
+		}
+		if notfound {
+			log(fmt.Sprintf("removing entry for %s :%s", k, source))
+			m.Delete(k)
+		}
+		return true
+	})
+
 }
 
 func updateSyncMapFromGrapevine(gv GrapevineACL, m *sync.Map, source string) {
 	for _, p := range gv.Data.Pubkeys {
 		m.LoadOrStore(p, source)
-		// cleanup pubkeys that have been removed from Grapevine
-		//cleanupSyncMapFromGrapevine()
 	}
+	cleanupSyncMapFromGrapevine(gv, m, source)
 }
 
 func isModAction(relay Relay, e StrfryEvent) bool {
@@ -359,6 +404,15 @@ type influxdbConfig struct {
 	Measurement string `mapstructure:"INFLUXDB_MEASUREMENT"`
 }
 
+func mapLen(m *sync.Map) int {
+	counter := 0
+	m.Range(func(k, v interface{}) bool {
+		counter = counter + 1
+		return true
+	})
+	return counter
+}
+
 func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
 	for _, p := range relay.AllowList.ListPubkeys {
 		// legacy, sometimes they're not in hex here
@@ -374,19 +428,14 @@ func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
 		m.Store(usekey, "relay")
 
 		// cleanup pubkeys that have been removed from ListPubkeys
-		cleanupSyncMapFromRelay(relay.AllowList.ListPubkeys, m)
 	}
-
-	counter := 0
-	m.Range(func(k, v interface{}) bool {
-		counter = counter + 1
-		return true
-	})
-	log(fmt.Sprintf("total pubkeys in map: %d", counter))
+	cleanupSyncMapFromRelay(relay.AllowList.ListPubkeys, m)
 }
 
 func cleanupSyncMapFromRelay(lp []ListPubkey, m *sync.Map) {
+	counter := 0
 	m.Range(func(k, v interface{}) bool {
+		counter++
 		if v != "relay" {
 			return true
 		}
@@ -403,9 +452,9 @@ func cleanupSyncMapFromRelay(lp []ListPubkey, m *sync.Map) {
 
 		return true
 	})
-}
 
-var pubkeyMap sync.Map
+	log(fmt.Sprintf("total pubkeys in map: %d", counter))
+}
 
 func main() {
 	var reader = bufio.NewReader(os.Stdin)
@@ -431,15 +480,14 @@ func main() {
 		updateSyncMapFromRelay(relay, &pubkeyMap)
 	}
 
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
 	aclListener := make(chan []AclSource)
+
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
 
 	go func() {
 		for {
 			<-ticker.C
-			log("received TICK from main queryRelay loop")
 			relay, err1 = queryRelay(relay)
 			if err1 != nil {
 				log("there was an error fetching relay, using cache or nil" + err1.Error())
@@ -479,8 +527,11 @@ func main() {
 							log("unknown type" + as.AclType)
 						}
 
+						// stagger the fetch
+						time.Sleep(time.Second * 5)
+
 						// setup new acl (ticker)
-						newTimer := time.NewTicker(30 * time.Second)
+						newTimer := time.NewTicker(15 * time.Minute)
 						allTimers[as.ID] = newTimer
 
 						go func(thisAcl AclSource) {
@@ -488,7 +539,6 @@ func main() {
 								<-newTimer.C
 
 								// here we kick off a new acl listener
-								log(fmt.Sprintf("new tick! from %s", thisAcl.ID))
 								if thisAcl.AclType == "grapevine" {
 									fetchGrapevine(thisAcl, &pubkeyMap)
 								} else if thisAcl.AclType == "nip05" {
@@ -514,17 +564,15 @@ func main() {
 						log(fmt.Sprintf("cleaning up %s ", o.Url))
 						allTimers[o.ID].Stop()
 						// TODO cleanup the pubkeyMap
-						var deletes []any
+						counter := 0
 						pubkeyMap.Range(func(key, value any) bool {
 							if value == o.ID {
-								deletes = append(deletes, key)
+								counter += 1
+								pubkeyMap.Delete(key)
 							}
 							return true
 						})
-						log(fmt.Sprintf("deleting %d pubkeys from map source removal", len(deletes)))
-						for _, d := range deletes {
-							pubkeyMap.Delete(d)
-						}
+						log(fmt.Sprintf("deleted %d pubkeys from map source removal", counter))
 					}
 				}
 				oldAclSources = a
@@ -668,7 +716,6 @@ func main() {
 		// false is deny, true is allow
 		if !relay.DefaultMessagePolicy {
 			// relay is in whitelist pubkey mode, only allow these pubkeys to post
-
 			if value, ok := pubkeyMap.Load(e.Event.Pubkey); value != "" && ok {
 				// allowed
 				log(fmt.Sprintf("allowing whitelist for %s from source:%s", e.Event.Pubkey, value))
@@ -680,9 +727,8 @@ func main() {
 				if e.Event.Tags != nil && len(e.Event.Tags) >= 1 {
 					for _, x := range e.Event.Tags {
 						if x[0] == "p" {
-
 							if value, ok := pubkeyMap.Load(x[1]); value != "" && ok {
-								log(fmt.Sprintf("allowing whitelist for tagged pubkey: ", x[1], value))
+								log(fmt.Sprintf("allowing whitelist for tagged pubkey: %s, %s ", x[1], value))
 								allowMessage = true
 							}
 						}
