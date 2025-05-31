@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
@@ -61,15 +62,8 @@ type Relay struct {
 			Reason      string      `json:"reason"`
 			ExpiresAt   interface{} `json:"expires_at"`
 		} `json:"list_keywords"`
-		ListPubkeys []struct {
-			ID          string      `json:"id"`
-			AllowListID string      `json:"AllowListId"`
-			BlockListID interface{} `json:"BlockListId"`
-			Pubkey      string      `json:"pubkey"`
-			Reason      string      `json:"reason"`
-			ExpiresAt   interface{} `json:"expires_at"`
-		} `json:"list_pubkeys"`
-		ListKinds []struct {
+		ListPubkeys []ListPubkey `json:"list_pubkeys"`
+		ListKinds   []struct {
 			ID          string      `json:"id"`
 			AllowListID string      `json:"AllowListId"`
 			BlockListID interface{} `json:"BlockListId"`
@@ -119,16 +113,16 @@ type Relay struct {
 		} `json:"user"`
 	} `json:"moderators"`
 
-	/*
-		AclSources []struct {
-			ID      string `json:"id"`
-			RelayID string `json:"relayId"`
-			AclType string `json:"aclType"`
-			Url     string `json:"url"`
-		} `json:"acl_sources"`
-	*/
-
 	AclSources []AclSource `json:"acl_sources"`
+}
+
+type ListPubkey struct {
+	ID          string      `json:"id"`
+	AllowListID string      `json:"AllowListId"`
+	BlockListID interface{} `json:"BlockListId"`
+	Pubkey      string      `json:"pubkey"`
+	Reason      string      `json:"reason"`
+	ExpiresAt   interface{} `json:"expires_at"`
 }
 
 type AclSource struct {
@@ -138,11 +132,33 @@ type AclSource struct {
 	Url     string `json:"url"`
 }
 
+var logfile *os.File
 var errlog = bufio.NewWriter(os.Stderr)
 
+func initLogging() error {
+	var err error
+	logfile, err = os.OpenFile("spamblaster.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		errlog.WriteString(fmt.Sprintf("Error opening log file: %v\n", err))
+		errlog.Flush()
+		return err
+	}
+	return nil
+}
+
 func log(message string) {
-	errlog.WriteString(fmt.Sprintln(message))
+	// Get current timestamp
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	formattedMsg := fmt.Sprintf("[%s] %s", timestamp, message)
+
+	// Write to stderr
+	errlog.WriteString(formattedMsg + "\n")
 	errlog.Flush()
+
+	// Write to log file if initialized
+	if logfile != nil {
+		logfile.WriteString(formattedMsg + "\n")
+	}
 }
 
 func decodePub(pubkey string) string {
@@ -224,11 +240,60 @@ type influxdbConfig struct {
 	Measurement string `mapstructure:"INFLUXDB_MEASUREMENT"`
 }
 
+func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
+	for _, p := range relay.AllowList.ListPubkeys {
+		// legacy, sometimes they're not in hex here
+		usekey := p.Pubkey
+		if strings.Contains(p.Pubkey, "npub") {
+			if _, v, err := nip19.Decode(p.Pubkey); err == nil {
+				usekey = v.(string)
+			} else {
+				log("error decoding pubkey: " + p.Pubkey + " " + err.Error())
+			}
+		}
+		// store with the source mentioned here as relay
+		m.Store(usekey, "relay")
+
+		// cleanup pubkeys that have been removed from ListPubkeys
+		cleanupSyncMapFromRelay(relay.AllowList.ListPubkeys, m)
+	}
+}
+
+func cleanupSyncMapFromRelay(lp []ListPubkey, m *sync.Map) {
+	m.Range(func(k, v interface{}) bool {
+		if v != "relay" {
+			return true
+		}
+		notfound := true
+		for _, i := range lp {
+			if i.Pubkey == k {
+				notfound = false
+			}
+		}
+		if notfound {
+			m.Delete(k)
+			log(fmt.Sprintf("removing entry for %s", k))
+		}
+
+		return true
+	})
+}
+
+var pubkeyMap sync.Map
+
 func main() {
 	var reader = bufio.NewReader(os.Stdin)
 	var output = bufio.NewWriter(os.Stdout)
 	defer output.Flush()
 	defer errlog.Flush()
+
+	// Initialize logging to both stderr and file
+	if err := initLogging(); err != nil {
+		log("Warning: Could not initialize log file, continuing with stderr logging only")
+	} else {
+		defer logfile.Close()
+		log("Logging initialized successfully to both stderr and spamblaster.log")
+	}
 
 	var err1 error
 	var relay Relay
@@ -236,6 +301,8 @@ func main() {
 	relay, err1 = queryRelay(relay)
 	if err1 != nil {
 		log("there was an error fetching relay, using cache or nil: " + err1.Error())
+	} else {
+		updateSyncMapFromRelay(relay, &pubkeyMap)
 	}
 
 	ticker := time.NewTicker(5 * time.Second)
@@ -246,23 +313,25 @@ func main() {
 	go func() {
 		for {
 			<-ticker.C
+			log("received TICK from main queryRelay loop")
 			relay, err1 = queryRelay(relay)
 			if err1 != nil {
 				log("there was an error fetching relay, using cache or nil" + err1.Error())
+			} else {
+				updateSyncMapFromRelay(relay, &pubkeyMap)
 			}
 			aclListener <- relay.AclSources
 		}
 	}()
 
 	go func() {
-		//var sources = make(map[string]bool)
 		var oldAclSources []AclSource
 		var allTimers = make(map[string]*time.Ticker)
 
 		for {
 			a := <-aclListener
 			if len(oldAclSources) != len(a) {
-				log("lengths different")
+				log("aclListeners updating")
 				for _, as := range a {
 					foundOld := false
 					for _, o := range oldAclSources {
@@ -275,13 +344,17 @@ func main() {
 					}
 					if !foundOld {
 						// setup new acl
-						log(fmt.Sprintf("setting up new %s", as.Url))
-						newTimer := time.NewTicker(5 * time.Second)
+						log(fmt.Sprintf("setting up new %s:%s", as.Url, as.ID))
+
+						newTimer := time.NewTicker(10 * time.Second)
 						allTimers[as.ID] = newTimer
 
 						go func(thisAcl AclSource) {
 							for {
 								<-newTimer.C
+
+								// here we kick off a new acl listener
+
 								log(fmt.Sprintf("new tick! from %s", thisAcl.ID))
 							}
 						}(as)
@@ -443,32 +516,22 @@ func main() {
 		// false is deny, true is allow
 		if !relay.DefaultMessagePolicy {
 			// relay is in whitelist pubkey mode, only allow these pubkeys to post
-			for _, k := range relay.AllowList.ListPubkeys {
-				usekey := k.Pubkey
-				if strings.Contains(k.Pubkey, "npub") {
-					if _, v, err := nip19.Decode(k.Pubkey); err == nil {
-						usekey = v.(string)
-					} else {
-						log("error decoding pubkey: " + k.Pubkey + " " + err.Error())
-					}
-				}
 
-				// TODO: this is not the best way to match the pubkey
-				// account for blank string here at least
-				if strings.Contains(e.Event.Pubkey, usekey) {
-					log("allowing whitelist for pubkey: " + usekey)
-					allowMessage = true
-				}
+			if value, ok := pubkeyMap.Load(e.Event.Pubkey); value != "" && ok {
+				// allowed
+				log(fmt.Sprintf("allowing whitelist for %s from source:%s", e.Event.Pubkey, value))
+				allowMessage = true
+			}
 
-				// if we're allowing tags, check if pubkey is tagged in the messages ptags
-				if relay.AllowTagged {
-					if e.Event.Tags != nil && len(e.Event.Tags) >= 1 {
-						for _, x := range e.Event.Tags {
-							if x[0] == "p" {
-								if x[1] == usekey {
-									log("allowing whitelist for tagged pubkey: " + usekey)
-									allowMessage = true
-								}
+			// if we're allowing tags, check if pubkey is tagged in the messages ptags
+			if relay.AllowTagged {
+				if e.Event.Tags != nil && len(e.Event.Tags) >= 1 {
+					for _, x := range e.Event.Tags {
+						if x[0] == "p" {
+
+							if value, ok := pubkeyMap.Load(x[1]); value != "" && ok {
+								log(fmt.Sprintf("allowing whitelist for tagged pubkey: ", x[1], value))
+								allowMessage = true
 							}
 						}
 					}
