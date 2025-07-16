@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
@@ -404,10 +405,10 @@ type influxdbConfig struct {
 	Measurement string `mapstructure:"INFLUXDB_MEASUREMENT"`
 }
 
-func mapLen(m *sync.Map) int {
-	counter := 0
+func mapLen(m *sync.Map) int64 {
+	var counter int64
 	m.Range(func(k, v interface{}) bool {
-		counter = counter + 1
+		atomic.AddInt64(&counter, 1)
 		return true
 	})
 	return counter
@@ -425,23 +426,33 @@ func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
 			}
 		}
 		// store with the source mentioned here as relay
-		m.Store(usekey, "relay")
+		m.LoadOrStore(usekey, "relay")
 
 		// cleanup pubkeys that have been removed from ListPubkeys
 	}
+
 	cleanupSyncMapFromRelay(relay.AllowList.ListPubkeys, m)
+	//log(fmt.Sprintf("mapLen size is: %d", mapLen(m)))
+	log(fmt.Sprintf("lp size is: %d", len(relay.AllowList.ListPubkeys)))
+	//doubleCheckAllKeysExist(relay.AllowList.ListPubkeys, m)
 }
 
 func cleanupSyncMapFromRelay(lp []ListPubkey, m *sync.Map) {
-	counter := 0
 	m.Range(func(k, v interface{}) bool {
-		counter++
 		if v != "relay" {
 			return true
 		}
 		notfound := true
 		for _, i := range lp {
-			if i.Pubkey == k {
+			usekey := i.Pubkey
+			if strings.Contains(i.Pubkey, "npub") {
+				if _, v, err := nip19.Decode(i.Pubkey); err == nil {
+					usekey = v.(string)
+				} else {
+					log("error decoding pubkey: " + i.Pubkey + " " + err.Error())
+				}
+			}
+			if usekey == k {
 				notfound = false
 			}
 		}
@@ -452,8 +463,24 @@ func cleanupSyncMapFromRelay(lp []ListPubkey, m *sync.Map) {
 
 		return true
 	})
+}
 
-	log(fmt.Sprintf("total pubkeys in map: %d", counter))
+func doubleCheckAllKeysExist(lp []ListPubkey, m *sync.Map) {
+
+	for _, i := range lp {
+		usekey := i.Pubkey
+		if strings.Contains(i.Pubkey, "npub") {
+			if _, v, err := nip19.Decode(i.Pubkey); err == nil {
+				usekey = v.(string)
+			} else {
+				log("error decoding pubkey: " + i.Pubkey + " " + err.Error())
+			}
+		}
+		_, ok := m.Load(usekey)
+		if !ok {
+			log(fmt.Sprintf("ERROR: key was not found in map: %s", usekey))
+		}
+	}
 }
 
 func main() {
@@ -528,10 +555,10 @@ func main() {
 						}
 
 						// stagger the fetch
-						time.Sleep(time.Second * 5)
+						time.Sleep(time.Second * 30)
 
 						// setup new acl (ticker)
-						newTimer := time.NewTicker(15 * time.Minute)
+						newTimer := time.NewTicker(60 * time.Minute)
 						allTimers[as.ID] = newTimer
 
 						go func(thisAcl AclSource) {
@@ -789,7 +816,6 @@ func main() {
 				if !allowMessage {
 					for _, k := range relay.AllowList.ListKinds {
 						if e.Event.Kind == k.Kind {
-							log("allowing for kind: " + fmt.Sprintf("%d", k.Kind))
 							allowMessage = true
 						}
 					}
@@ -848,9 +874,7 @@ func main() {
 		// if a kind is blocked, it overrides all other ACLs above this
 		if relay.BlockList.ListKinds != nil && len(relay.BlockList.ListKinds) >= 1 {
 			for _, k := range relay.BlockList.ListKinds {
-				log("checking kind: " + fmt.Sprintf("%d, %d", k.Kind, e.Event.Kind))
 				if e.Event.Kind == k.Kind {
-					log("rejecting for kind: " + fmt.Sprintf("%d", k.Kind))
 					badResp = "blocked kind " + fmt.Sprintf("%d", k.Kind) + " reason: " + k.Reason
 					allowMessage = false
 				}
