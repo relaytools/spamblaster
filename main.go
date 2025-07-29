@@ -546,7 +546,7 @@ func main() {
 					if !foundOld {
 						// setup new acl (initial fetch)
 						log(fmt.Sprintf("setting up new %s:%s", as.Url, as.ID))
-						if as.AclType == "grapevine" {
+						if as.AclType == "grapevine" || as.AclType == "brainstorm" {
 							fetchGrapevine(as, &pubkeyMap)
 						} else if as.AclType == "nip05" {
 							fetchNip05(as, &pubkeyMap)
@@ -566,7 +566,7 @@ func main() {
 								<-newTimer.C
 
 								// here we kick off a new acl listener
-								if thisAcl.AclType == "grapevine" {
+								if thisAcl.AclType == "grapevine" || thisAcl.AclType == "brainstorm" {
 									fetchGrapevine(thisAcl, &pubkeyMap)
 								} else if thisAcl.AclType == "nip05" {
 									fetchNip05(thisAcl, &pubkeyMap)
