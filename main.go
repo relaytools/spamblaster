@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -192,31 +193,17 @@ func decodePub(pubkey string) string {
 	return usepub
 }
 
-func queryRelay(oldrelay Relay) (Relay, error) {
+func queryRelay(apiURL string, oldrelay Relay) (Relay, error) {
 
 	relay := Relay{}
 
-	// example spamblaster config
-	url := "http://127.0.0.1:3000/api/sconfig/relays/clkklcjon000wgh31mcgbut40"
-
-	body, err := os.ReadFile("./spamblaster.cfg")
-	if err != nil {
-		log(fmt.Sprintf("unable to read config file: %v", err))
-	} else {
-		url = strings.TrimSuffix(string(body), "\n")
-	}
-
-	rClient := http.Client{
-		Timeout: time.Second * 10,
-	}
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
 
 	if err != nil {
 		log(err.Error())
 		return oldrelay, err
 	}
-	res, getErr := rClient.Do(req)
+	res, getErr := client.Do(req)
 	if getErr != nil {
 		log(getErr.Error())
 		return oldrelay, err
@@ -432,7 +419,7 @@ func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
 	}
 
 	cleanupSyncMapFromRelay(relay.AllowList.ListPubkeys, m)
-	//log(fmt.Sprintf("mapLen size is: %d", mapLen(m)))
+	log(fmt.Sprintf("mapLen size is: %d", mapLen(m)))
 	log(fmt.Sprintf("lp size is: %d", len(relay.AllowList.ListPubkeys)))
 	//doubleCheckAllKeysExist(relay.AllowList.ListPubkeys, m)
 }
@@ -500,7 +487,60 @@ func main() {
 	var err1 error
 	var relay Relay
 
-	relay, err1 = queryRelay(relay)
+	// InfluxDB and PRIVATE_KEY config file
+	viper.AddConfigPath("/usr/local/etc")
+	viper.AddConfigPath("/srv/strfry")
+	viper.AddConfigPath(".")
+	viper.SetConfigName(".spamblaster.env")
+	viper.SetConfigType("env")
+	influxEnabled := false
+	var iConfig *influxdbConfig
+
+	if err := viper.ReadInConfig(); err != nil {
+		log(fmt.Sprint("Warn: error reading .spamblaster.env main config file from /srv/strfry/, /usr/local/etc, ./\n", err))
+		os.Exit(1)
+	}
+
+	// Viper unmarshals the loaded env variables into the struct
+	if err := viper.Unmarshal(&iConfig); err != nil {
+		log("could not unmarshal influxdb parts of config?!")
+	}
+
+	if viper.GetString("INFLUX_ENABLED") != "" {
+		influxEnabled = true
+	} else {
+		log("Warn: influxdb is disabled\n")
+	}
+
+	pkey := viper.GetString("PRIVATE_KEY")
+
+	log(fmt.Sprintf("Info: influxdb: %t\n", influxEnabled))
+
+	// example spamblaster config
+	apiURL := "http://127.0.0.1:3000/api/sconfig/relays/clkklcjon000wgh31mcgbut40"
+
+	body, err := os.ReadFile("./spamblaster.cfg")
+	if err != nil {
+		log(fmt.Sprintf("unable to read config file: %v", err))
+	} else {
+		apiURL = strings.TrimSuffix(string(body), "\n")
+	}
+
+	base, err := url.Parse(apiURL)
+	if err != nil {
+		log(fmt.Sprintf("error parsing apiURL: %v", err))
+	}
+
+	baseURL := &url.URL{
+		Scheme: base.Scheme,
+		Host:   base.Host,
+	}
+
+	ev := signEventWithLoginToken(baseURL.String(), pkey)
+	csrf := getCSRF(baseURL.String())
+	performLogin(baseURL.String(), ev, csrf)
+
+	relay, err1 = queryRelay(apiURL, relay)
 	if err1 != nil {
 		log("there was an error fetching relay, using cache or nil: " + err1.Error())
 	} else {
@@ -515,7 +555,7 @@ func main() {
 	go func() {
 		for {
 			<-ticker.C
-			relay, err1 = queryRelay(relay)
+			relay, err1 = queryRelay(apiURL, relay)
 			if err1 != nil {
 				log("there was an error fetching relay, using cache or nil" + err1.Error())
 			} else {
@@ -606,24 +646,6 @@ func main() {
 			}
 		}
 	}()
-
-	// InfluxDB optional config loading
-	viper.AddConfigPath("/usr/local/etc")
-	viper.SetConfigName(".spamblaster.env")
-	viper.SetConfigType("env")
-	influxEnabled := true
-	var iConfig *influxdbConfig
-	if err := viper.ReadInConfig(); err != nil {
-		log(fmt.Sprint("Warn: error reading influxdb config file /usr/local/etc/.spamblaster.env\n", err))
-		influxEnabled = false
-	}
-	// Viper unmarshals the loaded env variables into the struct
-	if err := viper.Unmarshal(&iConfig); err != nil {
-		log(fmt.Sprint("Warn: unable to decode influxdb config into struct\n", err))
-		influxEnabled = false
-	}
-
-	log(fmt.Sprintf("Info: influxdb: %t\n", influxEnabled))
 
 	var client influxdb2.Client
 	var writeAPI api.WriteAPI
