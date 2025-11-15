@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
@@ -392,6 +391,7 @@ type influxdbConfig struct {
 	Measurement string `mapstructure:"INFLUXDB_MEASUREMENT"`
 }
 
+/*
 func mapLen(m *sync.Map) int64 {
 	var counter int64
 	m.Range(func(k, v interface{}) bool {
@@ -400,6 +400,7 @@ func mapLen(m *sync.Map) int64 {
 	})
 	return counter
 }
+*/
 
 func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
 	for _, p := range relay.AllowList.ListPubkeys {
@@ -419,7 +420,7 @@ func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
 	}
 
 	cleanupSyncMapFromRelay(relay.AllowList.ListPubkeys, m)
-	log(fmt.Sprintf("mapLen size is: %d", mapLen(m)))
+	//log(fmt.Sprintf("mapLen size is: %d", mapLen(m)))
 	log(fmt.Sprintf("lp size is: %d", len(relay.AllowList.ListPubkeys)))
 	//doubleCheckAllKeysExist(relay.AllowList.ListPubkeys, m)
 }
@@ -481,7 +482,7 @@ func main() {
 		log("Warning: Could not initialize log file, continuing with stderr logging only")
 	} else {
 		defer logfile.Close()
-		log("Logging initialized successfully to both stderr and spamblaster.log")
+		log("Logging initialized successfully")
 	}
 
 	var err1 error
@@ -506,7 +507,7 @@ func main() {
 		log("could not unmarshal influxdb parts of config?!")
 	}
 
-	if viper.GetString("INFLUX_ENABLED") != "" {
+	if iConfig.Token != "" || iConfig.Url != "" || iConfig.Bucket != "" {
 		influxEnabled = true
 	} else {
 		log("Warn: influxdb is disabled\n")
@@ -742,7 +743,7 @@ func main() {
 					log(fmt.Sprintln("strfry command output: ", string(out)))
 				} else if thisAction == "blockAndDeletePubkey" {
 					log(fmt.Sprintf("received action from mod: block and delete pubkey <%s>, reason: %s", thisPubkey, thisReason))
-					// shell out
+					// shell ouma
 					filter := fmt.Sprintf("{\"authors\": [\"%s\"]}", thisPubkey)
 					cmd := exec.Command("/app/strfry", "delete", "--filter", filter)
 					out, err := cmd.Output()
