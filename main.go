@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
@@ -52,6 +53,7 @@ type Relay struct {
 	AllowGiftwrap        bool   `json:"allow_giftwrap"`
 	AllowTagged          bool   `json:"allow_tagged"`
 	AllowKeywordPubkey   bool   `json:"allow_keyword_pubkey"`
+	UseWoaForTagged      bool   `json:"use_woa_for_tagged"`
 	AllowList            struct {
 		ID           string `json:"id"`
 		RelayID      string `json:"relayId"`
@@ -228,7 +230,7 @@ func queryRelay(apiURL string, oldrelay Relay) (Relay, error) {
 func fetchGrapevine(aclSource AclSource, m *sync.Map) bool {
 	// Set a timeout for the HTTP request
 	client := &http.Client{
-		Timeout: 20 * time.Second,
+		Timeout: 240 * time.Second,
 	}
 
 	res, err := client.Get(aclSource.Url)
@@ -391,7 +393,6 @@ type influxdbConfig struct {
 	Measurement string `mapstructure:"INFLUXDB_MEASUREMENT"`
 }
 
-/*
 func mapLen(m *sync.Map) int64 {
 	var counter int64
 	m.Range(func(k, v interface{}) bool {
@@ -400,7 +401,6 @@ func mapLen(m *sync.Map) int64 {
 	})
 	return counter
 }
-*/
 
 func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
 	for _, p := range relay.AllowList.ListPubkeys {
@@ -415,18 +415,30 @@ func updateSyncMapFromRelay(relay Relay, m *sync.Map) {
 		}
 		// store with the source mentioned here as relay
 		m.LoadOrStore(usekey, "relay")
-
-		// cleanup pubkeys that have been removed from ListPubkeys
 	}
 
-	cleanupSyncMapFromRelay(relay.AllowList.ListPubkeys, m)
-	//log(fmt.Sprintf("mapLen size is: %d", mapLen(m)))
+	m.LoadOrStore(relay.Owner.Pubkey, "relay")
+	for _, x := range relay.Moderators {
+		m.LoadOrStore(x.User.Pubkey, "relay")
+	}
+
+	cleanupSyncMapFromRelay(relay, m)
+	log(fmt.Sprintf("mapLen size is: %d", mapLen(m)))
 	log(fmt.Sprintf("lp size is: %d", len(relay.AllowList.ListPubkeys)))
 	//doubleCheckAllKeysExist(relay.AllowList.ListPubkeys, m)
 }
 
-func cleanupSyncMapFromRelay(lp []ListPubkey, m *sync.Map) {
+func cleanupSyncMapFromRelay(relay Relay, m *sync.Map) {
+	lp := relay.AllowList.ListPubkeys
 	m.Range(func(k, v interface{}) bool {
+		if k == relay.Owner.Pubkey {
+			return true
+		}
+		for _, x := range relay.Moderators {
+			if k == x.User.Pubkey {
+				return true
+			}
+		}
 		if v != "relay" {
 			return true
 		}
@@ -444,7 +456,7 @@ func cleanupSyncMapFromRelay(lp []ListPubkey, m *sync.Map) {
 				notfound = false
 			}
 		}
-		if notfound {
+		if notfound && k != relay.Owner.Pubkey {
 			m.Delete(k)
 			log(fmt.Sprintf("removing entry for %s", k))
 		}
@@ -767,21 +779,39 @@ func main() {
 		if !relay.DefaultMessagePolicy {
 			// relay is in whitelist pubkey mode, only allow these pubkeys to post
 			if value, ok := pubkeyMap.Load(e.Event.Pubkey); value != "" && ok {
-				// allowed
-				log(fmt.Sprintf("allowing whitelist for %s from source:%s", e.Event.Pubkey, value))
-				allowMessage = true
+				// if use woa for tagged, only allow if it's from the relay ACL
+				if relay.UseWoaForTagged && value == "relay" {
+					log(fmt.Sprintf("WOATAGS:enabled allowing whitelist for %s from source:%s", e.Event.Pubkey, value))
+					allowMessage = true
+				} else if !relay.UseWoaForTagged {
+					log(fmt.Sprintf("WOATAGS:disabled allowing whitelist for %s from source:%s", e.Event.Pubkey, value))
+					allowMessage = true
+				}
 			}
 
 			// if we're allowing tags, check if pubkey is tagged in the messages ptags
 			if relay.AllowTagged {
 				if e.Event.Tags != nil && len(e.Event.Tags) >= 1 {
 					for _, x := range e.Event.Tags {
-						if x[0] == "p" {
+
+						// if we are using woa for tagged, check if the tag is tagging someone in the relay ACL,
+						// then check that the pubkey tagging is in the whitelist
+						if x[0] == "p" && relay.UseWoaForTagged {
+							if value, ok := pubkeyMap.Load(x[1]); value == "relay" && ok {
+								if value, ok := pubkeyMap.Load(e.Event.Pubkey); value != "" && ok {
+									log(fmt.Sprintf("WOA: allowing whitelist for tagged pubkey: %s, %s ", x[1], value))
+									allowMessage = true
+								}
+							}
+						} else if x[0] == "p" {
 							if value, ok := pubkeyMap.Load(x[1]); value != "" && ok {
 								log(fmt.Sprintf("allowing whitelist for tagged pubkey: %s, %s ", x[1], value))
 								allowMessage = true
+							} else {
+								log(fmt.Sprintf("we didnt find a match for %s", x[1]))
 							}
 						}
+
 					}
 				}
 			}
