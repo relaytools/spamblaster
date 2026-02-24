@@ -914,14 +914,15 @@ func main() {
 			}
 		}
 
+		// not doing this anymore
 		// NIP59, NIP87, NIP86 (private groups/giftwrap allow)
-		if relay.AllowGiftwrap {
-			if e.Event.Kind == 13 || e.Event.Kind == 1059 || e.Event.Kind == 1060 || e.Event.Kind == 24 || e.Event.Kind == 25 || e.Event.Kind == 26 || e.Event.Kind == 27 || e.Event.Kind == 35834 {
-				// allow all gifts
-				allowMessage = true
-				log("allowing for gift, kind: " + fmt.Sprintf("%d", e.Event.Kind))
-			}
-		}
+		//if relay.AllowGiftwrap {
+		//	if e.Event.Kind == 13 || e.Event.Kind == 1059 || e.Event.Kind == 1060 || e.Event.Kind == 24 || e.Event.Kind == 25 || e.Event.Kind == 26 || e.Event.Kind == 27 || e.Event.Kind == 35834 {
+		//		// allow all gifts
+		//		allowMessage = true
+		//		log("allowing for gift, kind: " + fmt.Sprintf("%d", e.Event.Kind))
+		//	}
+		//}
 
 		// Kind checking
 		// if a kind is blocked, it overrides all other ACLs above this
